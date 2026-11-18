@@ -1,6 +1,7 @@
 import argparse
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 import httpx
@@ -26,6 +27,7 @@ TREND = {
 THEMES = {
     "id": "earnings-themes",
     "kind": "themes",
+    "mode": "staged",
     "title": "Earnings themes and funding context",
     "bank": "SYN1-CA",
     "sources": [
@@ -34,6 +36,18 @@ THEMES = {
         {"source": "investor_presentation", "topic": "Funding costs", "required": False},
     ],
     "instruction": "Identify cited funding-cost claims and include the benchmark context.",
+    "output_format": "themes",
+}
+
+
+HIGHLIGHT = {
+    "id": "margin-slides",
+    "kind": "highlights",
+    "title": "Investor slides · Margin drivers",
+    "bank": "SYN1-CA",
+    "sources": [{"source": "investor_presentation", "topic": "Net Interest Income & Margins",
+                 "terms": ["net interest margin"]}],
+    "instruction": "Find the strongest margin driver and the cited basis-point movement.",
     "output_format": "themes",
 }
 
@@ -80,6 +94,18 @@ def demonstrate(client, wait=wait_for_run, show=print):
     revised = submit(client, "PATCH", drafts, {
         "revision": revised["revision"], "op": "replace_section", "section": THEMES,
     })
+    revised = submit(client, "PATCH", drafts, {
+        "revision": revised["revision"], "op": "add_section", "section": HIGHLIGHT,
+    })
+    gathered = submit(client, "POST", f"{drafts}/previews", {
+        "revision": revised["revision"], "period": Q2, "section_id": THEMES["id"], "stop_after": "gather",
+    })
+    wait(client, gathered["id"])
+    gathered_result = submit(client, "GET", f"/v1/runs/{gathered['id']}/output.json")
+    stage_outputs = gathered_result["sections"][0]["stage_outputs"]
+    assert gathered_result["completion"] == "gathered"
+    assert [stage["kind"] for stage in stage_outputs] == ["retrieve"] and stage_outputs[0]["passages"]
+    show(f"Staged preview stopped after gather with {len(stage_outputs[0]['passages'])} cited passage(s).")
     stage_list = submit(client, "GET", f"{drafts}/stages")
     kinds = [stage["kind"] for stage in stage_list[0]["stages"]]
     assert kinds == ["retrieve", "calculate", "draft", "numeric_check", "format"]
@@ -119,11 +145,17 @@ def demonstrate(client, wait=wait_for_run, show=print):
             for citation in claim["citations"]:
                 evidence = submit(client, "GET", f"{run_path}/evidence/{citation['id']}")
                 assert evidence == citation and f'#e-{citation["id"]}' in html.text
-    show("Saved v2; preview HTML and JSON carry linked citations.")
+    personal = submit(client, "POST", "/v1/templates", {
+        "title": "My earnings brief", "report_id": v2["report_id"], "version": v2["version"],
+    })
+    recreated = submit(client, "POST", "/v1/drafts", {"template": personal["id"]})
+    assert len(recreated["spec"]["sections"]) == 3
+    show("Saved v2 and created a personal template that instantiates all 3 sections.")
+    show("Preview HTML and JSON carry linked citations.")
     return {"draft": draft, "saved": v2, "baseline": baseline, "preview": preview, "run": preview, "result": preview_result}
 
 
-def demonstrate_automatic(client, settings: Settings, saved: dict, show=print):
+def demonstrate_automatic(client, settings: Settings, saved: dict, show=print, pdf_output: Path | None = None):
     if not settings.local or "host=/tmp/aegis-g1." not in settings.report_dsn:
         raise ValueError("The injected-clock demo requires the disposable local fixture")
     owner = LocalAuth(settings.local_user_id).authenticate(None).owner_key(settings.owner_secret)
@@ -146,7 +178,7 @@ def demonstrate_automatic(client, settings: Settings, saved: dict, show=print):
     result = submit(client, "GET", f"{path}/output.json")
     assert result["period"] == Q3
     assert all(item["data_stability"] == "stable" for item in result["readiness"].values() if item["required"])
-    assert len(result["sections"][0]["rows"]) == 4
+    assert len(result["sections"]) == 3 and len(result["sections"][0]["rows"]) == 4
     claims = result["sections"][1]["claims"]
     assert {claim["citations"][0]["source"] for claim in claims} >= {"transcripts", "investor_presentation"}
     html = client.get(f"{path}/output.html")
@@ -154,6 +186,16 @@ def demonstrate_automatic(client, settings: Settings, saved: dict, show=print):
     assert all(f'#e-{id_}' in html.text for claim in claims for id_ in claim["evidence_ids"])
     show("After advancing the injected clock, the automatic run rendered cited HTML and JSON for saved v2.")
     show("  FY2090 Q3 themes: " + " | ".join(claim["text"] for claim in claims))
+    highlight = result["sections"][2]["claims"][0]
+    assert "page 19" in highlight["citations"][0]["locator"]
+    show(f"  Slides highlight: {highlight['text']} ({highlight['citations'][0]['locator']})")
+    pdf = client.get(f"{path}/output.pdf")
+    pdf.raise_for_status()
+    assert pdf.content.startswith(b"%PDF-") and pdf.headers["content-type"] == "application/pdf"
+    if pdf_output:
+        with pdf_output.open("xb") as file:
+            file.write(pdf.content)
+    show(f"Exported a cited PDF for the finished three-section report ({len(pdf.content)} bytes).")
     return result
 
 
@@ -161,6 +203,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("base_url", nargs="?", default="http://127.0.0.1:8000")
     parser.add_argument("--automatic-fixture", action="store_true")
+    parser.add_argument("--pdf-output", type=Path)
     args = parser.parse_args()
     with httpx.Client(base_url=args.base_url, timeout=10, trust_env=False) as client:
         settings = Settings.from_env() if args.automatic_fixture else None
@@ -168,7 +211,7 @@ def main():
             print(f"Worker quiet period: {settings.quiet_seconds:g} s.")
         delivery = demonstrate(client)
         if settings:
-            demonstrate_automatic(client, settings, delivery["saved"])
+            demonstrate_automatic(client, settings, delivery["saved"], pdf_output=args.pdf_output)
 
 
 if __name__ == "__main__":

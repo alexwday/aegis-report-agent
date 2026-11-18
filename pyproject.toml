@@ -7,11 +7,16 @@ dependencies = [
   "httpx>=0.28,<1",
   "psycopg[binary]>=3.2,<4",
   "pydantic>=2.11,<3",
+  "reportlab>=4.4,<5",
   "uvicorn>=0.34,<1",
 ]
 
 [dependency-groups]
-dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
+dev = [
+    "pypdf>=5,<8",
+    "pytest>=8,<10",
+    "ruff>=0.11,<1",
+]
 
 [build-system]
 requires = ["hatchling>=1.27,<2"]

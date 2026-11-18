@@ -1,48 +1,91 @@
 from html import escape
 
-from .claims import draft_themes
+from .claims import INSTRUCTION_TEXT, SPEAKER_TAG, draft_themes
 from .gateway import GatewayError, ModelGateway
 from .models import Period, ReportSpec, SectionSpec, StageKind, compile_section
 from .sources import BenchmarkFact, Passage, compute_change
 
 
 def generate_report(
-    spec: ReportSpec, quarter: Period, evidence: dict[str, list[BenchmarkFact | Passage]], gateway: ModelGateway
+    spec: ReportSpec, quarter: Period, evidence: dict[str, list[BenchmarkFact | Passage]], gateway: ModelGateway,
+    *, trace: bool = False, gather_only: bool = False,
 ) -> dict:
     return {
         "title": spec.title,
         "period": quarter.model_dump(),
         "basis": "vendor_fiscal_label",
-        "sections": [generate_section(section, quarter, evidence[section.id], gateway) for section in spec.sections],
+        "completion": "gathered" if gather_only else "finished",
+        "sections": [
+            generate_section(section, quarter, evidence[section.id], gateway, trace=trace, gather_only=gather_only)
+            for section in spec.sections
+        ],
     }
 
 
-def generate_section(section: SectionSpec, quarter: Period, evidence: list[BenchmarkFact | Passage], gateway) -> dict:
+def evidence_excerpt(text: str) -> str:
+    body = " ".join(SPEAKER_TAG.sub("", text, count=1).split())
+    return body if len(body) <= 260 else body[:257].rsplit(" ", 1)[0] + "…"
+
+
+def gathered_passages(passages: list[Passage]) -> list[dict]:
+    distinct = {}
+    for passage in passages:
+        if INSTRUCTION_TEXT.search(passage.text):
+            continue
+        distinct.setdefault(passage.citation.id, {
+            "excerpt": evidence_excerpt(passage.text),
+            "citation": passage.citation.model_dump(mode="json"),
+            "period": passage.period.model_dump(),
+            "topics": list(passage.topics),
+        })
+        if len(distinct) == 50:
+            break
+    return list(distinct.values())
+
+
+def generate_section(
+    section: SectionSpec, quarter: Period, evidence: list[BenchmarkFact | Passage], gateway,
+    *, trace: bool = False, gather_only: bool = False,
+) -> dict:
     rows = [item for item in evidence if isinstance(item, BenchmarkFact)]
     passages = [item for item in evidence if isinstance(item, Passage)]
+    row_data = [row.model_dump(mode="json") for row in rows]
+    output = {
+        "id": section.id, "title": section.title, "mode": section.mode,
+        "resolved_periods": [quarter.shifted(offset).model_dump() for offset in section.time.resolved_offsets()],
+    }
+    stages = []
     comparisons, claims, note = [], [], None
     for stage in compile_section(section):
-        if stage.kind is StageKind.CALCULATE:
+        if stage.kind is StageKind.RETRIEVE:
+            if trace or gather_only:
+                stages.append({"kind": stage.kind, "rows": row_data, "passages": gathered_passages(passages)})
+            if gather_only:
+                break
+        elif stage.kind is StageKind.CALCULATE:
             comparisons = changes_for(rows, quarter, section.time.comparison_offset())
-        if stage.kind is StageKind.DRAFT:
-            if section.kind == "themes":
+            if trace:
+                stages.append({"kind": stage.kind, "comparisons": comparisons})
+        elif stage.kind is StageKind.DRAFT:
+            if section.kind in ("themes", "highlights"):
                 claims = [claim.model_dump(mode="json") for claim in draft_themes(section.instruction, passages, gateway)]
             else:
                 note = draft_note(section.instruction, rows, gateway)
-        if stage.kind is StageKind.NUMERIC_CHECK and any(
-            row.actual is None or not row.actual.is_finite() or not row.citation.id for row in rows
-        ):
-            raise GatewayError("invalid_numeric_evidence")
-    return {
-        "id": section.id,
-        "title": section.title,
-        "resolved_periods": [quarter.shifted(offset).model_dump() for offset in section.time.resolved_offsets()],
-        "rows": [row.model_dump(mode="json") for row in rows],
-        "note": note,
-        "claims": claims,
-        "comparison": comparisons[0] if comparisons else None,
+            if trace:
+                stages.append({"kind": stage.kind, "claims": claims, "note": note})
+        elif stage.kind is StageKind.NUMERIC_CHECK:
+            if any(row.actual is None or not row.actual.is_finite() or not row.citation.id for row in rows):
+                raise GatewayError("invalid_numeric_evidence")
+            if trace:
+                stages.append({"kind": stage.kind, "validated_rows": len(rows)})
+    blocks = {
+        "rows": [] if gather_only else row_data,
+        "claims": claims, "note": note, "comparison": comparisons[0] if comparisons else None,
         "comparisons": comparisons,
     }
+    if trace and not gather_only:
+        stages.append({"kind": "format", "blocks": blocks})
+    return output | blocks | {"stage_outputs": stages}
 
 
 def changes_for(rows: list[BenchmarkFact], quarter: Period, offset: int) -> list[dict]:
@@ -115,7 +158,14 @@ def render_html(result: dict) -> str:
         periods = ", ".join(str(Period.model_validate(item)) for item in section.get("resolved_periods", []))
         if periods:
             blocks.append(f"<p>Resolved periods: {escape(periods)}</p>")
-        if not section["rows"] and not section.get("claims"):
+        if result.get("completion") == "gathered":
+            gather = section.get("stage_outputs", [])[0]
+            blocks.append(f"<p>Gathered {len(gather['rows'])} rows and {len(gather['passages'])} passages.</p>")
+            for passage in gather["passages"]:
+                citation = passage["citation"]
+                sources[citation["id"]] = citation["locator"]
+                blocks.append(f"<p>{escape(passage['excerpt'])} {citation_link(citation['id'])}</p>")
+        elif not section["rows"] and not section.get("claims"):
             blocks.append("<p>No cited evidence matched this section.</p>")
         if section["rows"]:
             blocks.append(

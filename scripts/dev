@@ -44,7 +44,11 @@ if (( attempt == 100 )); then
 fi
 echo "Local API and worker ready at http://127.0.0.1:$port"
 if [[ "$mode" == --demo ]]; then
-    .venv/bin/python scripts/demo.py "http://127.0.0.1:$port" --automatic-fixture
+    if [[ -n "${AEGIS_DEMO_PDF:-}" ]]; then
+        .venv/bin/python scripts/demo.py "http://127.0.0.1:$port" --automatic-fixture --pdf-output "$AEGIS_DEMO_PDF"
+    else
+        .venv/bin/python scripts/demo.py "http://127.0.0.1:$port" --automatic-fixture
+    fi
 else
     while kill -0 "$api_pid" "$worker_pid" 2>/dev/null; do
         sleep 0.25

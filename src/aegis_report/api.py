@@ -5,9 +5,9 @@ from uuid import UUID
 
 import httpx
 import psycopg
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import Field
 
@@ -24,15 +24,20 @@ from .models import (
     DraftPatch,
     Period,
     PreviewRequest,
+    ReportClone,
+    ReportRename,
     ReportSpec,
     RunRequest,
+    ScheduleWrite,
     SourceName,
     SourceProbeRequest,
     Stage,
     StrictModel,
+    TemplateCreate,
     compile_section,
 )
-from .repository import Reports, template
+from .pdf_export import render_pdf
+from .repository import Reports
 from .sources import (
     BankCatalog,
     BenchmarkFact,
@@ -43,6 +48,7 @@ from .sources import (
     Scope,
     SourceIssue,
 )
+from .templates import SYSTEM_TEMPLATES, build_system_template, template_index
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -69,6 +75,7 @@ class DraftResponse(StrictModel):
     id: UUID
     report_id: UUID | None
     base_version: int | None
+    head_at_start: int | None = None
     revision: int
     spec: ReportSpec
 
@@ -99,6 +106,7 @@ class RunResponse(StrictModel):
     id: UUID
     mode: Literal["generate", "preview"]
     trigger_kind: Literal["manual", "automatic"]
+    stop_after: Literal["gather"] | None = None
     report_id: UUID | None
     version: int | None
     draft_revision: int | None
@@ -123,15 +131,60 @@ class Note(StrictModel):
     text: str
 
 
-class SectionResult(StrictModel):
-    resolved_periods: list[Period] = Field(default_factory=list)
-    id: str
-    title: str
+class SectionBlocks(StrictModel):
     rows: list[BenchmarkFact]
     note: Note | None
     comparison: Comparison | None
     comparisons: list[Comparison] = Field(default_factory=list)
     claims: list[ThemeClaim] = Field(default_factory=list)
+
+
+class GatheredPassage(StrictModel):
+    excerpt: str
+    citation: Citation
+    period: Period
+    topics: list[str]
+
+
+class GatherOutput(StrictModel):
+    kind: Literal["retrieve"]
+    rows: list[BenchmarkFact]
+    passages: list[GatheredPassage]
+
+
+class CalculationOutput(StrictModel):
+    kind: Literal["calculate"]
+    comparisons: list[Comparison]
+
+
+class DraftOutput(StrictModel):
+    kind: Literal["draft"]
+    claims: list[ThemeClaim]
+    note: Note | None
+
+
+class NumericCheckOutput(StrictModel):
+    kind: Literal["numeric_check"]
+    validated_rows: int
+
+
+class FormatOutput(StrictModel):
+    kind: Literal["format"]
+    blocks: SectionBlocks
+
+
+StageOutput = Annotated[
+    GatherOutput | CalculationOutput | DraftOutput | NumericCheckOutput | FormatOutput,
+    Field(discriminator="kind"),
+]
+
+
+class SectionResult(SectionBlocks):
+    id: str
+    title: str
+    mode: Literal["one_step", "staged"] = "one_step"
+    resolved_periods: list[Period] = Field(default_factory=list)
+    stage_outputs: list[StageOutput] = Field(default_factory=list)
 
 
 class ReportDiff(StrictModel):
@@ -144,6 +197,7 @@ class Result(StrictModel):
     title: str
     period: Period
     basis: Literal["vendor_fiscal_label"]
+    completion: Literal["gathered", "finished"] = "finished"
     sections: list[SectionResult]
     diff: ReportDiff | None = None
     diff_details: DiffDetails | None = None
@@ -170,6 +224,33 @@ class CompiledSection(StrictModel):
 class TemplateResponse(StrictModel):
     id: str
     title: str
+    kind: Literal["system", "personal"]
+
+
+class ReportResponse(StrictModel):
+    id: UUID
+    title: str
+    head: int
+    created_at: datetime
+    archived_at: datetime | None
+
+
+class VersionResponse(StrictModel):
+    version: int
+    title: str
+    created_at: datetime
+
+
+class ScheduleResponse(StrictModel):
+    report_id: UUID
+    version: int
+    period: Period
+    enabled: bool
+    revision: int
+
+
+class CitationDetail(Citation):
+    excerpt: str
 
 
 class Status(StrictModel):
@@ -239,17 +320,33 @@ def create_app(settings: Settings | None = None, auth_provider: AuthProvider | N
             return SourceProbeResponse(state=Readiness.UNKNOWN, reason="source_unavailable")
 
     @api.get("/v1/templates", response_model=list[TemplateResponse])
-    def list_templates(owner: OwnerKey):
-        return [TemplateResponse(id="quarterly-earnings", title="Quarterly earnings")]
+    def list_templates(owner: OwnerKey, reports: Storage):
+        return template_index() + reports.list_personal_templates(owner)
+
+    @api.post("/v1/templates", response_model=TemplateResponse, status_code=201)
+    def create_template(body: TemplateCreate, owner: OwnerKey, reports: Storage):
+        return reports.create_personal_template(owner, body)
 
     @api.post("/v1/drafts", response_model=DraftResponse, status_code=201)
     def create_draft(body: DraftCreate, owner: OwnerKey, reports: Storage, request: Request):
+        is_system = body.template in SYSTEM_TEMPLATES
+        if is_system and body.bank is None:
+            raise HTTPException(422, "system_template_requires_bank")
+        personal_spec = reports.get_personal_template(owner, body.template) if not is_system else None
+        if body.bank is None and personal_spec is not None:
+            return reports.create_draft(owner, personal_spec)
         try:
             with connect(request.app.state.settings.source_dsn, source=True) as conn:
                 bank = request.app.state.catalog.resolve(conn, body.bank)
         except SourceIssue as exc:
             raise HTTPException(422, exc.reason) from exc
-        return reports.create_draft(owner, template(bank.symbol))
+        if personal_spec is not None:
+            spec = personal_spec.model_copy(update={
+                "sections": [section.model_copy(update={"bank": bank.symbol}) for section in personal_spec.sections],
+            })
+        else:
+            spec = build_system_template(body.template, bank.symbol)
+        return reports.create_draft(owner, spec)
 
     @api.get("/v1/drafts/{draft_id}", response_model=DraftResponse)
     def get_draft(draft_id: UUID, owner: OwnerKey, reports: Storage):
@@ -268,6 +365,42 @@ def create_app(settings: Settings | None = None, auth_provider: AuthProvider | N
     def save(draft_id: UUID, body: DraftEdit, owner: OwnerKey, reports: Storage):
         return reports.save(owner, draft_id, body.revision)
 
+    @api.get("/v1/reports", response_model=list[ReportResponse])
+    def list_reports(owner: OwnerKey, reports: Storage, archived: bool = False,
+                     limit: Annotated[int, Query(ge=1, le=100)] = 50,
+                     offset: Annotated[int, Query(ge=0)] = 0):
+        return reports.list_reports(owner, archived, limit, offset)
+
+    @api.get("/v1/reports/{report_id}", response_model=ReportResponse)
+    def report(report_id: UUID, owner: OwnerKey, reports: Storage):
+        return reports.get_report(owner, report_id)
+
+    @api.patch("/v1/reports/{report_id}", response_model=ReportResponse)
+    def rename_report(report_id: UUID, body: ReportRename, owner: OwnerKey, reports: Storage):
+        return reports.rename_report(owner, report_id, body.title)
+
+    @api.post("/v1/reports/{report_id}/archive", response_model=ReportResponse)
+    def archive_report(report_id: UUID, owner: OwnerKey, reports: Storage):
+        return reports.archive_report(owner, report_id, archived=True)
+
+    @api.post("/v1/reports/{report_id}/restore", response_model=ReportResponse)
+    def restore_report(report_id: UUID, owner: OwnerKey, reports: Storage):
+        return reports.archive_report(owner, report_id, archived=False)
+
+    @api.post("/v1/reports/{report_id}/clone", response_model=ReportResponse, status_code=201)
+    def clone_report(report_id: UUID, body: ReportClone, owner: OwnerKey, reports: Storage):
+        return reports.clone_report(owner, report_id, body)
+
+    @api.get("/v1/reports/{report_id}/versions", response_model=list[VersionResponse])
+    def versions(report_id: UUID, owner: OwnerKey, reports: Storage,
+                 limit: Annotated[int, Query(ge=1, le=100)] = 50,
+                 offset: Annotated[int, Query(ge=0)] = 0):
+        return reports.list_versions(owner, report_id, limit, offset)
+
+    @api.post("/v1/reports/{report_id}/versions/{version}/drafts", response_model=DraftResponse, status_code=201)
+    def historical_draft(report_id: UUID, version: Annotated[int, Field(ge=1)], owner: OwnerKey, reports: Storage):
+        return reports.draft_from_version(owner, report_id, version)
+
     @api.get("/v1/reports/{report_id}/versions/{version}", response_model=ReportSpec)
     def version(report_id: UUID, version: Annotated[int, Field(ge=1)], owner: OwnerKey, reports: Storage):
         return reports.get_version(owner, report_id, version)
@@ -275,6 +408,18 @@ def create_app(settings: Settings | None = None, auth_provider: AuthProvider | N
     @api.post("/v1/drafts/{draft_id}/previews", response_model=RunReference, status_code=202)
     def preview(draft_id: UUID, body: PreviewRequest, owner: OwnerKey, reports: Storage):
         return reports.enqueue_preview(owner, draft_id, body)
+
+    @api.get("/v1/reports/{report_id}/schedule", response_model=ScheduleResponse)
+    def get_schedule(report_id: UUID, owner: OwnerKey, reports: Storage):
+        return reports.get_schedule(owner, report_id)
+
+    @api.put("/v1/reports/{report_id}/schedule", response_model=ScheduleResponse)
+    def put_schedule(report_id: UUID, body: ScheduleWrite, owner: OwnerKey, reports: Storage):
+        return reports.put_schedule(owner, report_id, body)
+
+    @api.post("/v1/reports/{report_id}/schedule/enqueue", response_model=RunReference, status_code=202)
+    def enqueue_schedule(report_id: UUID, owner: OwnerKey, reports: Storage):
+        return reports.enqueue_schedule(owner, report_id)
 
     @api.post("/v1/reports/{report_id}/runs", response_model=RunReference, status_code=202)
     def create_run(report_id: UUID, body: RunRequest, owner: OwnerKey, reports: Storage):
@@ -297,9 +442,22 @@ def create_app(settings: Settings | None = None, auth_provider: AuthProvider | N
             "Cache-Control": "no-store",
         })
 
+    @api.get(
+        "/v1/runs/{run_id}/output.pdf", response_class=Response,
+        responses={200: {"content": {"application/pdf": {"schema": {"type": "string", "format": "binary"}}}}},
+    )
+    def pdf_output(run_id: UUID, owner: OwnerKey, reports: Storage):
+        document = render_pdf(reports.pdf_output(owner, run_id))
+        return Response(document, media_type="application/pdf",
+                        headers={"Content-Disposition": 'attachment; filename="report.pdf"'})
+
     @api.get("/v1/runs/{run_id}/evidence/{evidence_id}", response_model=Citation)
     def evidence(run_id: UUID, evidence_id: str, owner: OwnerKey, reports: Storage):
         return reports.citation(owner, run_id, evidence_id)
+
+    @api.get("/v1/runs/{run_id}/evidence/{evidence_id}/detail", response_model=CitationDetail)
+    def evidence_detail(run_id: UUID, evidence_id: str, owner: OwnerKey, reports: Storage):
+        return reports.citation(owner, run_id, evidence_id, detail=True)
 
     return api
 

@@ -113,7 +113,8 @@ class SectionSpec(StrictModel):
     title: Label
     bank: Symbol
     sources: list[SectionInput] = Field(min_length=1, max_length=4)
-    kind: Literal["benchmark", "themes"] = "benchmark"
+    kind: Literal["benchmark", "themes", "highlights"] = "benchmark"
+    mode: Literal["one_step", "staged"] = "one_step"
     time: TimeScope = Field(default_factory=TimeScope)
     instruction: Instruction
     output_format: Literal["table", "table_with_note", "themes"] = "table_with_note"
@@ -132,6 +133,9 @@ class SectionSpec(StrictModel):
                 raise ValueError("Themes require at least one earnings transcript source")
             if self.output_format != "themes":
                 raise ValueError("Themes sections use the themes output format")
+        elif self.kind == "highlights":
+            if self.output_format != "themes" or not any(isinstance(item, DocumentInput) for item in self.sources):
+                raise ValueError("Highlights require a document source and the themes output format")
         elif self.output_format == "themes" or not all(isinstance(item, BenchmarkInput) for item in self.sources):
             raise ValueError("Benchmark sections use benchmark sources and a table output format")
         identities = [source_identity(item) for item in self.sources]
@@ -185,8 +189,8 @@ def compile_section(section: SectionSpec) -> list[Stage]:
 
 
 class DraftCreate(StrictModel):
-    template: Literal["quarterly-earnings"] = "quarterly-earnings"
-    bank: Symbol
+    template: Label = "quarterly-earnings"
+    bank: Label | None = None
 
 
 class DraftPatch(StrictModel):
@@ -203,6 +207,13 @@ class PreviewRequest(DraftEdit):
     period: Period
     baseline_run_id: UUID | None = None
     section_id: SectionId | None = None
+    stop_after: Literal["gather"] | None = None
+
+    @model_validator(mode="after")
+    def check_stop_after(self) -> "PreviewRequest":
+        if self.stop_after and (self.section_id is None or self.baseline_run_id is not None):
+            raise ValueError("Gather-only preview requires one section and does not accept a diff baseline")
+        return self
 
 
 class RunRequest(StrictModel):
@@ -212,7 +223,29 @@ class RunRequest(StrictModel):
 
 
 class SourceProbeRequest(StrictModel):
-    bank: Symbol
+    bank: Label
     period: Period
     metric: Label | None = None
     segment: Label = "Enterprise"
+
+
+class ReportRename(StrictModel):
+    title: Label
+
+
+class ReportClone(StrictModel):
+    title: Label | None = None
+    version: int | None = Field(default=None, ge=1)
+
+
+class TemplateCreate(StrictModel):
+    title: Label
+    report_id: UUID
+    version: int | None = Field(default=None, ge=1)
+
+
+class ScheduleWrite(StrictModel):
+    version: int = Field(ge=1)
+    period: Period
+    enabled: bool
+    expected_revision: int | None = Field(default=None, ge=1)

@@ -70,13 +70,23 @@ Pin resource ownership and enforce it at drafts, versions, outputs, citations an
 
 Integration tests use a disposable local fixture and exercise role grants, mixed schema and nullable values, duplicate keys, edition order and overlap, changed markers, ownership and the complete authoring loop. A scripted HTTP demo runs the real API and worker. CI checks the generated contract against the checked-in artifact.
 
+## G3 lifecycle and evaluation
+
+R-003 supplied read-only findings from the real source tables. Call openings need substance ranking before the gateway. The 23-label crosswalk feeds weighted lexical matching over slide and RTS headings and chunk text. Search terms can be supplied independently. Optional configured embeddings contribute distance. The G3 evaluation scripts share the live adapter and claim paths and emit local-only excerpts and locators. The reviewer will return judged results in R-004. [PostgreSQL ranking documentation](https://www.postgresql.org/docs/15/textsearch-controls.html)
+
+A section has a default one-step mode and an optional staged mode. A selected section preview returns typed traces for retrieve, calculate, draft, check and format where applicable. Staged mode can finish after retrieve for inspection. Numeric comparisons prefer the vendor QoQ or YoY value at standard offsets with known basis. Other values are labeled as calculated from rounded actuals.
+
+Report catalog metadata is owner-scoped and separate from immutable versions. Archived reports can be restored. A clone copies an exact version. Historical drafts guard saves against the head at draft creation. System templates are shared and read-only. Personal templates snapshot an owned saved version. Saved reports expose PDF generated offline from JSON blocks, with escaped text and internal links to numbered source footnotes. [ReportLab paragraph links](https://docs.reportlab.com/reportlab/userguide/ch6_paragraphs/)
+
+Schedule definitions are owner-scoped, revisioned and pin a saved version and quarter. Explicit enqueue uses the existing automatic path. Pausing or changing the definition invalidates earlier queued revisions. Calendar activation and publication stay at G6.
+
 ## Later gates
 
 | Gate | Tasks | Engineering days | Exit evidence |
 |---|---|---:|---|
 | G1 Slice | T-006–T-008, T-017–T-019 | 4–6 | Corrected source fixtures, separated runtime roles, two source adapters, cited next-quarter generation and scripted diff demo. |
 | G2 Evidence | T-009–T-010, T-020–T-025 | 5–8 | Exact source catalog, immediate previews, fiscal presets, multi-source themes, slides/RTS, detailed diffs, and automatic-path demo. |
-| G3 Reports | T-011–T-012 | 6–10 | Broader typed stages, remaining source adapters as approved, personal/system template lifecycle, PDF after HTML/JSON. Revisit shared extraction after usage evidence. |
+| G3 Reports | T-011–T-012, T-026–T-031 | 6–10 | Ranked retrieval and reviewer harnesses, staged previews, report and template lifecycle, cited PDF, and schedule definitions. |
 | G4 Chat | T-013 | 4–6 | Typed draft tools, persisted/replayable SSE, turn-result fallback and abuse limits. |
 | G5 Handoff | T-014 | 4–6 | Developer console and written UI/SSE contract for Functions Assist. |
 | G6 Scheduling | T-015 | 5–8 | Toronto default timezone, zero extra maturity lag, 14-day correction window, complete required inputs by default, opt-in provisional publication, retries and concurrency controls. |

@@ -140,8 +140,7 @@ class BankCatalog:
         matches = exact or [
             bank for bank in banks
             if folded in {alias.casefold() for alias in (bank.name, *bank.aliases)}
-            or folded == bank.symbol.rsplit("-", 1)[0].casefold()
-        ]
+        ] or [bank for bank in banks if folded == bank.symbol.rsplit("-", 1)[0].casefold()]
         if len(matches) != 1:
             reason = "ambiguous_bank" if matches else "unknown_bank"
             raise SourceIssue(Readiness.UNKNOWN, reason)

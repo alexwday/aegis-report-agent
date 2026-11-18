@@ -32,7 +32,7 @@ def report_diff(baseline: dict, preview: dict) -> tuple[dict, DiffDetails]:
     summary = {
         "added": sorted(after.keys() - before.keys()),
         "removed": sorted(before.keys() - after.keys()),
-        "changed": sorted(key for key in before.keys() & after.keys() if before[key] != after[key]),
+        "changed": sorted(key for key in before.keys() & after.keys() if compared(before[key]) != compared(after[key])),
     }
     changes = []
     for section_id in dict.fromkeys([*before, *after]):
@@ -58,6 +58,10 @@ def report_diff(baseline: dict, preview: dict) -> tuple[dict, DiffDetails]:
     )
     return summary, details
 
+
+
+def compared(section: dict) -> dict:
+    return {"mode": "one_step"} | {key: value for key, value in section.items() if key != "stage_outputs"}
 
 
 def headings(sections):

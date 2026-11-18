@@ -54,10 +54,12 @@ INSERT INTO public.benchmarking_report
 VALUES ('Fixture peers', 'Net Income', 'Enterprise', '2090_Q3', 2090, 'Q3', 811, 'Calculated', 'synthetic/benchmarking.csv');
 
 INSERT INTO public.benchmarking_report
-    (bank, bank_symbol, "Parameter", "Platform", fiscal_year, quarter, "Actual", "QoQ", "Units", filepath)
+    (bank, bank_symbol, "Parameter", "Platform", fiscal_year, quarter, "Actual", "QoQ", "Units", updated_at, filepath)
 VALUES
-    ('SYN3', 'SYN3-US', 'Efficiency Ratio', 'Capital Markets', 2090, 'Q3', 47.77, -34, '%', 'synthetic/benchmarking.csv'),
-    ('SYN1', 'SYN1-CA', 'Net Income', 'Enterprise', 2088, 'Q3', 400, NULL, 'fixture invalid unit', 'synthetic/benchmarking.csv');
+    ('SYN3', 'SYN3-US', 'Efficiency Ratio', 'Capital Markets', 2090, 'Q3', 47.77, -34, '%',
+     timestamp '2090-10-01 00:00:00', 'synthetic/benchmarking.csv'),
+    ('SYN1', 'SYN1-CA', 'Net Income', 'Enterprise', 2088, 'Q3', 400, NULL, 'fixture invalid unit',
+     timestamp '2090-10-01 00:00:00', 'synthetic/benchmarking.csv');
 
 -- Same-quarter comparison fixtures. The 2088 Q3 value is explicit above.
 INSERT INTO public.benchmarking_report

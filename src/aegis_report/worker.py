@@ -110,7 +110,7 @@ class Worker:
                                       attempt_count = r.attempt_count + 1
                 FROM next_run WHERE r.id = next_run.id
                 RETURNING r.id, r.owner_key, r.mode, r.trigger_kind, r.report_id, r.period, r.spec,
-                          r.baseline_id, r.preview_section_id, r.readiness, r.lease_token
+                          r.baseline_id, r.preview_section_id, r.readiness, r.lease_token, r.stop_after, r.schedule_revision
             """, (now, now, now, uuid4(), now + timedelta(minutes=3))).fetchone()
 
     def run_one(self, now: datetime | None = None) -> bool:
@@ -124,6 +124,10 @@ class Worker:
         try:
             if job["mode"] == "generate" and not self._active_owner(job):
                 raise SourceIssue(Readiness.UNKNOWN, "report_or_owner_inactive")
+            if job["schedule_revision"] is not None:
+                with connect(self.settings.report_dsn) as conn:
+                    if not self._active_schedule(conn, job):
+                        raise SourceIssue(Readiness.UNKNOWN, "schedule_inactive_or_changed")
             spec = ReportSpec.model_validate(job["spec"])
             period = Period.model_validate(job["period"])
             automatic = job["trigger_kind"] == "automatic"
@@ -145,7 +149,11 @@ class Worker:
                 next_probe += timedelta(seconds=max(self.settings.poll_seconds, interval))
                 state = "waiting"
             else:
-                result = generate_report(spec, period, evidence, self.gateway)
+                result = generate_report(
+                    spec, period, evidence, self.gateway,
+                    trace=job["mode"] == "preview" and job["preview_section_id"] is not None,
+                    gather_only=job["stop_after"] == "gather",
+                )
                 result["readiness"] = readiness
                 if job["baseline_id"] is not None:
                     self._apply_diff(job, result)
@@ -157,6 +165,11 @@ class Worker:
 
         finished_at = now or self.clock()
         with connect(self.settings.report_dsn) as conn:
+            if state == "succeeded" and job["schedule_revision"] is not None:
+                # Schedule mutations and archive take this same report lock first.
+                conn.execute("SELECT id FROM rpt.reports WHERE id = %s FOR SHARE", (job["report_id"],))
+                if not self._active_schedule(conn, job):
+                    state, result, error_code = "failed", None, "schedule_inactive_or_changed"
             conn.execute("""
                 UPDATE rpt.runs SET state = %s, result = %s, readiness = %s, error_code = %s, next_probe_at = %s,
                                     lease_token = NULL, lease_until = NULL,
@@ -172,6 +185,13 @@ class Worker:
                 SELECT id FROM rpt.reports WHERE id = %s AND owner_key = %s AND archived_at IS NULL
             """, (job["report_id"], job["owner_key"])).fetchone()
         return bool(active_report and self.owner_status.is_active(job["owner_key"]))
+
+    def _active_schedule(self, conn, job):
+        return conn.execute("""
+            SELECT s.report_id FROM rpt.schedules s JOIN rpt.reports r ON r.id = s.report_id
+            WHERE s.report_id = %s AND r.owner_key = %s AND r.archived_at IS NULL
+              AND s.enabled AND s.revision = %s
+        """, (job["report_id"], job["owner_key"], job["schedule_revision"])).fetchone() is not None
 
     def _apply_diff(self, job, output):
         with connect(self.settings.report_dsn) as conn:

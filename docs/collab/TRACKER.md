@@ -10,8 +10,8 @@
 | T-008 | G1 | Verify source role, coverage, bank keys and the benchmarking and earnings adapters. | DONE | [Sources](../../src/aegis_report/sources.py), [catalog and adapter tests](../../tests/test_postgres.py) |
 | T-009 | G2 | Enable slides and RTS and retain typed statuses for unimplemented sources. | DONE | [Document adapters](../../src/aegis_report/documents.py), [PostgreSQL tests](../../tests/test_postgres.py) |
 | T-010 | G2 | Verify page anchors, metadata probes and distance limits against fixtures. | DONE | [PostgreSQL tests](../../tests/test_postgres.py) |
-| T-011 | G3 | Expand stages, source scope, preview and comparison functionality. | TODO | |
-| T-012 | G3 | Add personal template lifecycle and extend HTML/JSON exports to PDF. | TODO | |
+| T-011 | G3 | Expose typed stage output and gather-only previews. | DONE | [Stage compiler](../../src/aegis_report/models.py), [engine](../../src/aegis_report/engine.py) |
+| T-012 | G3 | Add personal templates and offline PDF export. | DONE | [PDF](../../src/aegis_report/pdf_export.py), [system templates](../../src/aegis_report/templates.py) |
 | T-013 | G4 | Build chat turn lifecycle, typed tools, resumable SSE, fallback turn result and provider tests. | TODO | |
 | T-014 | G5 | Build a thin developer console and write the Functions Assist UI/SSE contracts. | TODO | |
 | T-015 | G6 | Implement quarterly scheduling and corrections, readiness, retries, fencing and opt-in provisional publication. | TODO | |
@@ -24,4 +24,10 @@
 | T-022 | G2 | Compile fiscal presets to ordered, capped offsets and show resolved periods. | DONE | [Section spec](../../src/aegis_report/models.py), [unit tests](../../tests/test_unit.py) |
 | T-023 | G2 | Combine sources and validate cited earnings themes with quote fallback. | DONE | [Themes validator](../../src/aegis_report/claims.py), [PostgreSQL tests](../../tests/test_postgres.py) |
 | T-024 | G2 | Add structured row, cell, claim and period diffs, and extend the demo. | DONE | [Diff](../../src/aegis_report/diff.py), [demo](../../scripts/demo.py) |
-| T-025 | G2 | Submit S-003 and wait at G2 for R-003. | REVIEW | [S-003](status/S-003.md), `review-003` |
+| T-025 | G2 | Submit S-003 and wait at G2 for R-003. | DONE | [R-003](reviews/R-003.md), `review-003` |
+| T-026 | G3 | Improve theme and document relevance and deliver read-only evaluator commands. | DONE | [Themes](../../scripts/eval_themes.py), [documents](../../scripts/eval_documents.py), [tests](../../tests/test_postgres.py) |
+| T-027 | G3 | Cap reclaim attempts, disambiguate ticker prefixes, and prefer vendor standard-period changes. | DONE | [Worker](../../src/aegis_report/worker.py), [engine](../../src/aegis_report/engine.py) |
+| T-028 | G3 | Implement owner-scoped report lifecycle and new drafts from historical versions. | DONE | [Repository](../../src/aegis_report/repository.py), [tests](../../tests/test_postgres.py) |
+| T-029 | G3 | Add citation-detail excerpts and pinned schedule definition/enqueue. | DONE | [API contract](../../api/openapi.json), [schedule migration](../../db/migrations/007_schedule_definition.sql) |
+| T-030 | G3 | Demonstrate three sections, staged preview, personal template and linked PDF. | DONE | [Demo](../../scripts/demo.py), [status](status/S-004.md) |
+| T-031 | G3 | Submit S-004 and wait at G3 for R-004. | REVIEW | [S-004](status/S-004.md), `review-004` |

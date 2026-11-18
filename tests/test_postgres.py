@@ -2,12 +2,14 @@ import os
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from io import BytesIO
 
 import psycopg
 import pytest
-from demo import Q2, Q3, THEMES, demonstrate, demonstrate_automatic, submit
+from demo import Q2, Q3, THEMES, TREND, demonstrate, demonstrate_automatic, submit
 from fastapi.testclient import TestClient
 from psycopg import sql
+from pypdf import PdfReader
 
 from aegis_report.api import create_app
 from aegis_report.auth import LocalAuth
@@ -40,7 +42,10 @@ def settings(monkeypatch):
     fixture_dsn = os.environ["RPT_MIGRATION_DATABASE_URL"]
     assert fixture_dsn.startswith("host=/tmp/aegis-g1.")
     with connect(fixture_dsn) as conn:
-        conn.execute("TRUNCATE rpt.runs, rpt.drafts, rpt.report_versions, rpt.reports, rpt.source_observations")
+        conn.execute("""
+            TRUNCATE rpt.runs, rpt.drafts, rpt.report_versions, rpt.reports, rpt.source_observations,
+                     rpt.personal_templates, rpt.schedules
+        """)
     return settings
 
 
@@ -434,11 +439,13 @@ def test_ticker_fallback_is_unique(admin):
     admin.execute("""
         INSERT INTO public.aegis_data_availability
             (bank_id, bank_name, bank_symbol, fiscal_year, quarter)
-        VALUES (904, 'Other synthetic bank', 'SYN3-CA', 2090, 'Q3')
+        VALUES (904, 'Other synthetic bank', 'SYN3-CA', 2090, 'Q3'),
+               (905, 'Synthetic US affiliate', 'SYN1-US', 2090, 'Q3')
     """)
     with pytest.raises(SourceIssue, match="ambiguous_bank"):
         catalog.resolve(admin, "SYN3")
     assert catalog.resolve(admin, "SYN3-US").id == 903
+    assert catalog.resolve(admin, "SYN1").symbol == "SYN1-CA"
 
 
 def test_failed_lease_attempts_have_terminal_cap(settings):
@@ -467,3 +474,211 @@ def test_real_shaped_earnings_fallback_chooses_substance(admin):
     answer = draft_themes("Identify net interest margin and funding drivers", passages, BrokenGateway())
     assert answer[0].method == "fallback_quote"
     assert answer[0].text == "The net interest margin expanded 12 basis points as deposit costs eased."
+
+
+def test_staged_section_preview_stops_before_drafting_and_full_preview_traces_stages(settings):
+    class GatherOnlyGateway(StubGateway):
+        def draft_claims(self, instruction, evidence):
+            pytest.fail("Gather-only preview invoked the draft stage")
+
+        def choose_observation(self, instruction, evidence_ids):
+            pytest.fail("Gather-only preview invoked the draft stage")
+
+    with TestClient(create_app(settings)) as client:
+        draft = submit(client, "POST", "/v1/drafts", {"bank": "SYN1-CA"})
+        path = f"/v1/drafts/{draft['id']}"
+        preview = {"revision": 1, "period": Q3, "section_id": "net-income", "stop_after": "gather"}
+        assert client.post(f"{path}/previews", json=preview).json()["detail"] == "gather_only_requires_staged_section"
+        edited = submit(client, "PATCH", path, {
+            "revision": 1, "op": "add_section", "section": THEMES | {"mode": "staged"},
+        })
+        preview |= {"revision": edited["revision"], "section_id": THEMES["id"]}
+        paused = submit(client, "POST", f"{path}/previews", preview)
+        assert Worker(settings, GatherOnlyGateway()).run_one()
+        output = f"/v1/runs/{paused['id']}"
+        gathered = submit(client, "GET", f"{output}/output.json")
+        data = gathered["sections"][0]
+        assert gathered["completion"] == "gathered" and data["mode"] == "staged"
+        assert [stage["kind"] for stage in data["stage_outputs"]] == ["retrieve"]
+        assert data["rows"] == [] and data["claims"] == []
+        release = data["stage_outputs"][0]["passages"][0]
+        assert submit(client, "GET", f"{output}/evidence/{release['citation']['id']}/detail")["excerpt"]
+        assert client.get(f"{output}/output.pdf").status_code == 409
+
+        full = submit(client, "POST", f"{path}/previews", preview | {"stop_after": None})
+        full_path = f"/v1/runs/{full['id']}/output.json"
+        assert Worker(settings, StubGateway()).run_one()
+        completed = submit(client, "GET", full_path)["sections"][0]
+        assert [stage["kind"] for stage in completed["stage_outputs"]] == [
+            "retrieve", "draft", "numeric_check", "format",
+        ]
+        assert completed["stage_outputs"][-1]["blocks"]["claims"]
+        trend = submit(client, "PATCH", path, {
+            "revision": edited["revision"], "op": "replace_section", "section": TREND,
+        })
+        calculated = submit(client, "POST", f"{path}/previews", {
+            "revision": trend["revision"], "period": Q3, "section_id": TREND["id"],
+        })
+        assert Worker(settings, StubGateway()).run_one()
+        calc = submit(client, "GET", f"/v1/runs/{calculated['id']}/output.json")["sections"][0]
+        assert calc["stage_outputs"][1]["kind"] == "calculate"
+        assert calc["stage_outputs"][1]["comparisons"][0]["citation_ids"]
+
+
+def test_report_lifecycle_and_historical_drafts_are_owner_scoped(settings):
+    with TestClient(create_app(settings)) as owner, TestClient(
+        create_app(settings, LocalAuth("fixture-other-analyst"))
+    ) as outsider:
+        draft = submit(owner, "POST", "/v1/drafts", {"bank": "SYN1"})
+        draft_path = f"/v1/drafts/{draft['id']}"
+        saved = submit(owner, "POST", f"{draft_path}/save", {"revision": 1})
+        path = f"/v1/reports/{saved['report_id']}"
+        v2 = submit(owner, "POST", f"{draft_path}/save", {"revision": saved["draft_revision"]})
+        assert v2["version"] == 2
+        for method, suffix, body in (
+            ("GET", "", None), ("PATCH", "", {"title": "Foreign"}), ("POST", "/archive", None),
+            ("POST", "/restore", None), ("POST", "/clone", {}), ("GET", "/versions", None),
+            ("GET", "/versions/1", None), ("POST", "/versions/1/drafts", None),
+        ):
+            assert outsider.request(method, path + suffix, json=body).status_code == 404
+        assert submit(outsider, "GET", "/v1/reports") == []
+        renamed = submit(owner, "PATCH", path, {"title": "Quarterly earnings renamed"})
+        assert renamed["title"] == "Quarterly earnings renamed" and renamed["head"] == 2
+        assert submit(owner, "GET", "/v1/reports")[0]["title"] == renamed["title"]
+        assert [entry["version"] for entry in submit(owner, "GET", f"{path}/versions")] == [2, 1]
+        assert submit(owner, "GET", f"{path}/versions/1")["title"] == "Quarterly earnings"
+        historical = submit(owner, "POST", f"{path}/versions/1/drafts")
+        competing = submit(owner, "POST", f"{path}/versions/1/drafts")
+        assert historical["base_version"] == 1 and historical["head_at_start"] == 2
+        archived = submit(owner, "POST", f"{path}/archive")
+        assert archived["archived_at"] is not None
+        assert submit(owner, "GET", "/v1/reports") == []
+        assert submit(owner, "GET", "/v1/reports?archived=true")[0]["id"] == archived["id"]
+        assert owner.post(f"{path}/versions/1/drafts").status_code == 409
+        assert submit(owner, "POST", f"{path}/restore")["archived_at"] is None
+        revived = submit(owner, "POST", f"/v1/drafts/{historical['id']}/save", {"revision": 1})
+        assert revived["version"] == 3
+        assert owner.post(f"/v1/drafts/{competing['id']}/save", json={"revision": 1}).status_code == 409
+        cloned = submit(owner, "POST", f"{path}/clone", {"version": 1, "title": "Cloned history"})
+        assert cloned["head"] == 1 and cloned["id"] != renamed["id"]
+        clone = submit(owner, "GET", f"/v1/reports/{cloned['id']}/versions/1")
+        assert clone["title"] == "Cloned history"
+        assert clone["sections"] == historical["spec"]["sections"]
+
+
+def test_shared_system_and_personal_template_lifecycle(settings):
+    with TestClient(create_app(settings)) as owner, TestClient(
+        create_app(settings, LocalAuth("fixture-other-analyst"))
+    ) as outsider:
+        initial = submit(owner, "GET", "/v1/templates")
+        assert {row["kind"] for row in initial} == {"system"} and len(initial) >= 3
+        assert submit(outsider, "GET", "/v1/templates") == initial
+        for template_id in ("credit-watch", "margin-and-capital"):
+            created = submit(owner, "POST", "/v1/drafts", {"template": template_id, "bank": "SYN1-CA"})
+            assert len(created["spec"]["sections"]) == 2
+            assert any(section["kind"] == "highlights" for section in created["spec"]["sections"])
+        source = submit(owner, "POST", "/v1/drafts", {"bank": "SYN1"})
+        saved = submit(owner, "POST", f"/v1/drafts/{source['id']}/save", {"revision": 1})
+        body = {"title": "My earnings copy", "report_id": saved["report_id"], "version": 1}
+        assert outsider.post("/v1/templates", json=body).status_code == 404
+        personal = submit(owner, "POST", "/v1/templates", body)
+        assert personal["kind"] == "personal"
+        assert personal in submit(owner, "GET", "/v1/templates")
+        assert personal not in submit(outsider, "GET", "/v1/templates")
+        instantiate = {"template": personal["id"]}
+        assert outsider.post("/v1/drafts", json=instantiate).status_code == 404
+        draft = submit(owner, "POST", "/v1/drafts", instantiate)
+        assert draft["spec"]["title"] == body["title"] and draft["report_id"] is None
+        assert draft["spec"]["sections"] == source["spec"]["sections"]
+
+
+def test_schedule_revision_pinning_and_pause_use_automatic_path(settings):
+    time = [datetime.now(UTC) + timedelta(seconds=1)]
+    worker = Worker(settings, StubGateway(), clock=lambda: time[0])
+    with TestClient(create_app(settings)) as owner, TestClient(
+        create_app(settings, LocalAuth("fixture-other-analyst"))
+    ) as outsider:
+        draft = submit(owner, "POST", "/v1/drafts", {"bank": "SYN1-CA"})
+        saved = submit(owner, "POST", f"/v1/drafts/{draft['id']}/save", {"revision": 1})
+        report = f"/v1/reports/{saved['report_id']}"
+        path = f"{report}/schedule"
+        body = {"version": 1, "period": Q3, "enabled": True}
+        assert outsider.get(path).status_code == 404
+        assert outsider.put(path, json=body).status_code == 404
+        assert outsider.post(f"{path}/enqueue").status_code == 404
+        assert submit(owner, "PUT", path, body)["revision"] == 1
+        run = submit(owner, "POST", f"{path}/enqueue")
+        assert submit(owner, "POST", f"{path}/enqueue") == run
+        assert worker.run_one()
+        status_path = f"/v1/runs/{run['id']}"
+        run_state = submit(owner, "GET", status_path)
+        assert (run_state["trigger_kind"], run_state["state"], run_state["version"]) == ("automatic", "waiting", 1)
+        assert owner.put(path, json=body | {"enabled": False}).status_code == 409
+        paused = submit(owner, "PUT", path, body | {"enabled": False, "expected_revision": 1})
+        assert not paused["enabled"]
+        assert owner.post(f"{path}/enqueue").status_code == 409
+        time[0] += timedelta(seconds=1800)
+        assert worker.run_one()
+        assert submit(owner, "GET", status_path)["error_code"] == "schedule_inactive_or_changed"
+        assert submit(owner, "PUT", path, body | {"expected_revision": 2, "period": Q2})["period"] == Q2
+        submit(owner, "POST", f"{report}/archive")
+        assert not submit(owner, "GET", path)["enabled"]
+
+
+def test_pdf_export_has_citation_links_and_is_owner_scoped(settings):
+    now = datetime.now(UTC) + timedelta(seconds=1)
+    with TestClient(create_app(settings)) as owner, TestClient(
+        create_app(settings, LocalAuth("fixture-other-analyst"))
+    ) as outsider:
+        draft = submit(owner, "POST", "/v1/drafts", {"bank": "SYN1-CA"})
+        saved = submit(owner, "POST", f"/v1/drafts/{draft['id']}/save", {"revision": 1})
+        report = f"/v1/reports/{saved['report_id']}"
+        clone = submit(owner, "POST", f"{report}/clone", {"title": "Résultats <draft> & review"})
+        pending = submit(owner, "POST", f"/v1/reports/{clone['id']}/runs", {
+            "version": 1, "period": Q3, "request_key": "pdf-fixture",
+        })
+        assert Worker(settings, StubGateway(), clock=lambda: now).run_one()
+        output = f"/v1/runs/{pending['id']}/output.pdf"
+        assert outsider.get(output).status_code == 404
+        body = owner.get(output)
+        assert body.status_code == 200 and body.headers["content-type"] == "application/pdf"
+        reader = PdfReader(BytesIO(body.content))
+        extracted = " ".join(page.extract_text() for page in reader.pages)
+        assert "Résultats <draft> & review" in extracted
+        assert "[1] Derived dataset" in extracted
+        links = [entry.get_object() for page in reader.pages for entry in page.get("/Annots", [])]
+        assert links and all(link.get("/Subtype") == "/Link" and "/Dest" in link and "/A" not in link for link in links)
+
+
+def test_benchmark_comparison_uses_vendor_values_and_labels_other_offsets(admin):
+    from aegis_report.engine import changes_for
+
+    source = BenchmarkingSource({"CA": "CAD"})
+    current = source.search(admin, scope(admin))[0]
+    previous = source.search(admin, scope(admin, quarter=2))[0]
+    reported = changes_for([current, previous], current.period, -1)[0]
+    assert reported["value"] == "2.54" and reported["provenance"] == "vendor_qoq"
+    old = source.search(admin, scope(admin, year=2088))[0]
+    calculated = changes_for([current, old], current.period, -8)[0]
+    assert calculated["value"] == "11.50" and calculated["provenance"] == "rounded_actuals"
+
+
+def test_preview_marks_unmatched_document_focus(settings):
+    with TestClient(create_app(settings)) as client:
+        draft = submit(client, "POST", "/v1/drafts", {"bank": "SYN1-CA"})
+        path = f"/v1/drafts/{draft['id']}"
+        unmatched = {
+            "id": "missing-doc-theme", "title": "Unmatched topic", "bank": "SYN1-CA",
+            "kind": "highlights", "output_format": "themes", "instruction": "Find the requested topic.",
+            "sources": [{"source": "investor_presentation", "terms": ["unmatched fixture phrase"]}],
+        }
+        revised = submit(client, "PATCH", path, {"revision": 1, "op": "add_section", "section": unmatched})
+        pending = submit(client, "POST", f"{path}/previews", {
+            "revision": revised["revision"], "period": Q3, "section_id": unmatched["id"],
+        })
+        assert Worker(settings, StubGateway()).run_one()
+        output = f"/v1/runs/{pending['id']}"
+        result = submit(client, "GET", f"{output}/output.json")
+        entry = result["readiness"]["missing-doc-theme:0"]
+        assert entry["state"] == "ready" and entry["evidence_state"] == "no_match"
+        assert "No evidence matched unmatched fixture phrase." in client.get(f"{output}/output.html").text

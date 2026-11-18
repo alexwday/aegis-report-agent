@@ -30,4 +30,4 @@
 | T-028 | G3 | Implement owner-scoped report lifecycle and new drafts from historical versions. | DONE | [Repository](../../src/aegis_report/repository.py), [tests](../../tests/test_postgres.py) |
 | T-029 | G3 | Add citation-detail excerpts and pinned schedule definition/enqueue. | DONE | [API contract](../../api/openapi.json), [schedule migration](../../db/migrations/007_schedule_definition.sql) |
 | T-030 | G3 | Demonstrate three sections, staged preview, personal template and linked PDF. | DONE | [Demo](../../scripts/demo.py), [status](status/S-004.md) |
-| T-031 | G3 | Submit S-004 and wait at G3 for R-004. | REVIEW | [S-004](status/S-004.md), `review-004` |
+| T-031 | G3 | Submit S-004 and wait at G3 for R-004. | DONE | [S-004](status/S-004.md), `review-004` |

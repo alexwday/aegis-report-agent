@@ -20,6 +20,7 @@ from .engine import generate_report
 from .gateway import CredentialProvider, GatewayError, ModelGateway, build_gateway
 from .models import BenchmarkInput, EarningsInput, Period, ReportSpec, SectionInput, SourceName
 from .readiness import observe, record_observation
+from .reasons import reason_message
 from .repository import period_scopes
 from .sources import BankCatalog, Passage, Probe, Readiness, Scope, SourceIssue, opaque_id
 from .topics import search_terms
@@ -62,7 +63,7 @@ class RequestScope:
 
     def describe(self) -> dict:
         return {
-            "source": self.source, "bank": self.bank, "period": self.period.model_dump(),
+            "section_id": self.section_id, "source": self.source, "bank": self.bank, "period": self.period.model_dump(),
             "required": self.selector.required, "selector": self.selector.model_dump(mode="json"),
         }
 
@@ -145,6 +146,10 @@ class Worker:
                     for item in requests
                 }
                 evidence = None if automatic else {section.id: [] for section in spec.sections}
+            for entry in readiness.values():
+                entry["message"] = reason_message(entry.get("reason") or entry.get("evidence_state")) if (
+                    entry.get("reason") or entry.get("evidence_state")
+                ) else None
             if evidence is None:
                 physical_ready = all(
                     entry["state"] == Readiness.READY for entry in readiness.values() if entry["required"]

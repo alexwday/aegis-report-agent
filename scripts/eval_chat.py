@@ -80,11 +80,12 @@ def evaluate_case(case, gateway):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gateway", choices=("stub", "real"), default="stub")
+    parser.add_argument("--credentials-hook", metavar="MODULE:FUNCTION")
     args = parser.parse_args()
     cases = json.loads(CASES.read_text())
     with httpx.Client(trust_env=False) as client:
         try:
-            gateway = evaluation_gateway(args.gateway, client)
+            gateway = evaluation_gateway(args.gateway, client, args.credentials_hook)
         except ValueError as exc:
             parser.error(str(exc))
         passed = 0

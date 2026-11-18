@@ -1,6 +1,7 @@
 import json
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from time import monotonic, sleep
 from typing import Annotated, Literal
 from uuid import UUID
@@ -9,12 +10,12 @@ import httpx
 import psycopg
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import Field
 
 from .auth import AuthProvider, CurrentUser, LocalAuth, UpstreamAuth
-from .chat_models import TERMINAL, Conversation, ConversationCreate, TurnCreate, TurnResult
+from .chat_models import TERMINAL, ChatProposal, Conversation, ConversationCreate, TurnCreate, TurnResult
 from .chat_store import ChatStore
 from .claims import ThemeClaim
 from .config import Settings
@@ -42,6 +43,7 @@ from .models import (
 )
 from .pdf_export import render_pdf
 from .peers import PeerStatistics
+from .reasons import REASONS
 from .repository import Reports
 from .sources import (
     BankCatalog,
@@ -56,11 +58,19 @@ from .sources import (
 from .templates import SYSTEM_TEMPLATES, build_system_template, template_index
 
 bearer = HTTPBearer(auto_error=False)
+CONSOLE = Path(__file__).resolve().parents[2] / "ui"
+CONSOLE_CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+               "base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
 
 
 def get_current_user(
-    request: Request, credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]
+    request: Request, credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
+    x_aegis_local_identity: Annotated[str | None, Header(include_in_schema=False)] = None,
 ) -> CurrentUser:
+    if x_aegis_local_identity is not None and request.app.state.local_identities:
+        if x_aegis_local_identity not in request.app.state.local_identities:
+            raise HTTPException(422, "unknown_local_identity")
+        return LocalAuth(x_aegis_local_identity).authenticate(None)
     return request.app.state.auth.authenticate(credentials.credentials if credentials else None)
 
 
@@ -101,6 +111,8 @@ class RunReference(StrictModel):
 
 
 class Observation(Probe):
+    section_id: str | None = None
+    message: str | None = None
     since: datetime | None
     stable: bool
     data_stability: Literal["stable", "recently_changed", "unknown"] = "unknown"
@@ -287,6 +299,10 @@ def create_app(settings: Settings | None = None, auth_provider: AuthProvider | N
         active = settings or Settings.from_env()
         with httpx.Client(trust_env=False) as client:
             application.state.settings = active
+            application.state.local_identities = (
+                list(dict.fromkeys((active.local_user_id, "fixture-analyst", "fixture-reviewer")))
+                if active.local and auth_provider is None else []
+            )
             application.state.reports = Reports(active.report_dsn, active.retention_days)
             application.state.chat = ChatStore(application.state.reports)
             application.state.catalog = BankCatalog()
@@ -323,6 +339,27 @@ def create_app(settings: Settings | None = None, auth_provider: AuthProvider | N
     @api.get("/health", response_model=Status)
     def health():
         return Status()
+
+    @api.get("/console/context", include_in_schema=False)
+    def console_context(request: Request):
+        ids = request.app.state.local_identities
+        if not ids:
+            raise HTTPException(404)
+        return JSONResponse({"identities": ids}, headers={"Cache-Control": "no-store"})
+
+    @api.get("/console", include_in_schema=False)
+    @api.get("/console/{asset}", include_in_schema=False)
+    def local_console(request: Request, asset: str = "index.html"):
+        if not request.app.state.local_identities or asset not in {"index.html", "app.js", "app.css"}:
+            raise HTTPException(404)
+        return FileResponse(CONSOLE / asset, headers={
+            "Cache-Control": "no-store", "Content-Security-Policy": CONSOLE_CSP,
+            "X-Content-Type-Options": "nosniff",
+        })
+
+    @api.get("/v1/reasons", response_model=dict[str, str])
+    def reasons(owner: OwnerKey):
+        return REASONS
 
     @api.get("/v1/catalog/banks", response_model=list[BankResponse])
     def banks(request: Request, owner: OwnerKey):
@@ -380,6 +417,10 @@ def create_app(settings: Settings | None = None, auth_provider: AuthProvider | N
     @api.patch("/v1/drafts/{draft_id}", response_model=DraftResponse)
     def patch_draft(draft_id: UUID, body: DraftPatch, owner: OwnerKey, reports: Storage):
         return reports.patch(owner, draft_id, body)
+
+    @api.patch("/v1/drafts/{draft_id}/operations", response_model=DraftResponse)
+    def apply_draft_operations(draft_id: UUID, body: ChatProposal, owner: OwnerKey, reports: Storage):
+        return reports.apply_operations(owner, draft_id, body)
 
     @api.post("/v1/conversations", response_model=Conversation, status_code=201)
     def new_conversation(body: ConversationCreate, owner: OwnerKey, request: Request):

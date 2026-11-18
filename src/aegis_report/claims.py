@@ -39,6 +39,11 @@ DEFINITION_UNIT = re.compile(
     r"\b(?:is|are) (?:defined|calculated|measured|computed) (?:as|by)\b|\brefers to\b|"
     r"^(?-i:[A-Z][A-Z0-9 /()-]{1,30}):|^\s*(?:[*†‡]+|\[\d+\]|\(\d+\))\s+", re.I,
 )
+CONTINUATION = re.compile(
+    r"^(?:and|or|but|nor|yet|which|that|where|while|with|as well as|including|resulting in|due to)\b", re.I
+)
+FRAGMENT_START = re.compile(r"^[A-Z][a-z-]+, (?:which|where|who|while)\b")
+SENTENCE_BOUNDARY = re.compile(r"(?<!\b[A-Z]\.)(?<!\b[A-Z]\.[A-Z]\.)(?<=[.!?])\s+(?=[A-Z0-9$€£])")
 BULLET = re.compile(r"^\s*(?:[-*+•▪◦]\s+|\d{1,2}[.)]\s+)")
 QUANTIFIED = re.compile(r"\d[\d.,]*\s*(?:%|bps?\b|basis points?\b|million\b|billion\b|[×x]\b)|[$€£]\s*\d", re.I)
 SUBSTANTIVE = re.compile(
@@ -78,6 +83,18 @@ class Candidate:
         return {"id": self.citation.id, "topic": self.topic, "text": self.text, "source": self.citation.source}
 
 
+def complete_claim(text: str) -> bool:
+    if not 24 <= len(text) <= 320 or len(WORD.findall(text)) < 5 or not text.endswith((".", "!")):
+        return False
+    if text.endswith(("...", "….", "..")):
+        return False
+    beginning = text.lstrip("\"'“‘($€£")
+    return bool(
+        beginning and (beginning[0].isupper() or beginning[0].isdigit())
+        and not CONTINUATION.match(beginning) and not FRAGMENT_START.match(beginning)
+    )
+
+
 def document_units(passage: Passage, allow_definitions: bool):
     if not allow_definitions and (
         REFERENCE_HEADING.search(passage.heading or "")
@@ -85,37 +102,55 @@ def document_units(passage: Passage, allow_definitions: bool):
     ):
         return
     body = re.sub(r"<!--.*?-->", "", passage.text, flags=re.S)
-    for line in body.splitlines():
+    units = []
+    for line in body.splitlines() if passage.citation.source is SourceName.SLIDES else re.split(r"\n[ \t]*\n", body):
         line = line.strip()
         if not allow_definitions and REFERENCE_HEADING.search(line.lstrip("# ")):
             break
         bullet = BULLET.match(line)
         line = line[bullet.end():] if bullet else line
-        if line.startswith(("|", "<")):
+        if line.startswith(("#", "|", "<")):
+            line = "\n".join(piece for piece in line.splitlines()
+                             if not piece.lstrip().startswith(("#", "|", "<")))
+        units.extend(SENTENCE_BOUNDARY.split(line))
+
+    following = passage.following
+    if units and following and not INSTRUCTION_TEXT.search(following.text):
+        tail = " ".join(units[-1].split())
+        continuation = " ".join(SENTENCE_BOUNDARY.split(following.text.strip(), maxsplit=1)[0].split())
+        if tail and continuation and not continuation.startswith(("#", "<", "|", "•")) and (
+            not tail.endswith((".", "!", "?")) and (
+                tail.endswith((",", ";")) or CONTINUATION.match(continuation) or continuation[0].islower()
+            )
+        ):
+            units[-1] = tail + " " + continuation
+            joined = len(units) - 1
+        else:
+            joined = None
+    else:
+        joined = None
+    citation = passage.citation
+    for index, part in enumerate(units):
+        if index == 0 and passage.begins_mid_sentence:
             continue
-        # The displayed unit is copied from the source after removing structural markup.
-        parts = [line] if bullet else re.split(r"(?<=[.!?])\s+", line)
-        for part in parts:
-            text = " ".join(part.strip("*_ ").split())
-            quantified = bool(QUANTIFIED.search(text))
-            definition = bool(DEFINITION_UNIT.search(text))
-            if (not 20 <= len(text) <= 320 or len(WORD.findall(text)) < 4
-                or (definition and not allow_definitions)):
-                continue
+        text = " ".join(part.strip("*_ ").split())
+        quantified = bool(QUANTIFIED.search(text))
+        definition = bool(DEFINITION_UNIT.search(text))
+        if complete_claim(text) and (allow_definitions or not definition):
             if quantified or SUBSTANTIVE.search(text) or (allow_definitions and definition):
-                yield text, int(quantified)
+                yield text, int(quantified), following.citation if index == joined else citation
 
 
 def document_candidates(passage: Passage, instruction: str, focus: set[str], semantic: bool):
     vector_bonus = 2 * max(0, 1 - passage.distance) if semantic and passage.distance is not None else 0
-    for text, quantified in document_units(passage, bool(DEFINITION_REQUEST.search(instruction))):
+    for text, quantified, citation in document_units(passage, bool(DEFINITION_REQUEST.search(instruction))):
         intent = min(4, len(focus.intersection(WORD.findall(text.casefold()))))
         for topic in passage.topics:
             hits = lexical_hits(text, search_terms((topic,), passage.terms))
-            if hits or intent:
-                yield Candidate(topic, text, passage.citation,
-                                4 * hits + intent + 2 * quantified + min(2, passage.relevance or 0) + vector_bonus,
-                                passage.citation.id)
+            if hits or (intent and quantified):
+                yield Candidate(topic, text, citation,
+                                4 * hits + intent + 5 * quantified + min(4, (passage.relevance or 0) / 4) + vector_bonus,
+                                citation.id)
 
 
 def passage_candidates(passage: Passage, instruction: str, focus: set[str], semantic: bool):
@@ -197,9 +232,13 @@ def shortlist_passages(passages: list[Passage], instruction: str, *, semantic: b
     if len(passages) <= 40:
         return passages
     # Preserve relevance and diversity before assembling the report-wide evidence list.
-    ranked_ids = dict.fromkeys(item.citation.id for item in candidates_for(passages, instruction, semantic=semantic))
     by_id = {item.citation.id: item for item in passages}
-    return [by_id[id_] for id_ in list(ranked_ids)[:40]]
+    by_id.update((item.following.citation.id, item) for item in passages if item.following)
+    ranked = {}
+    for candidate in candidates_for(passages, instruction, semantic=semantic):
+        passage = by_id[candidate.citation.id]
+        ranked.setdefault(passage.citation.id, passage)
+    return list(ranked.values())[:40]
 
 
 def draft_themes(

@@ -118,7 +118,7 @@ def render_pdf(result: dict) -> bytes:
             ]))
             parts.extend([table, Spacer(1, 8)])
         for peer in section.get("peers", []):
-            parts.append(paragraph(peer_text(peer), "meta", [row["citation_id"] for row in peer["ranks"]]))
+            parts.append(paragraph(peer_text(peer), "meta", [row["citation_id"] for row in peer.get("ordered_values") or peer["ranks"]]))
         for change in section.get("comparisons") or [section.get("comparison")]:
             if change:
                 parts.append(paragraph(comparison_text(change), "meta", change["citation_ids"]))

@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aegis Developer Console</title>
+  <link rel="stylesheet" href="/console/app.css">
+  <script src="/console/app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to workspace</a>
+  <header class="top">
+    <div class="brand"><span class="mark" aria-hidden="true">A</span><div><h1>Aegis</h1><p>Developer console</p></div></div>
+    <label class="identity">Local identity <select id="identity"></select></label>
+  </header>
+  <div class="shell">
+    <nav aria-label="Workspace" id="nav">
+      <button data-view="reports" aria-current="page">Reports</button>
+      <button data-view="templates">Templates</button>
+      <button data-view="draft">Draft editor</button>
+      <button data-view="runs">Runs &amp; evidence</button>
+      <button data-view="sources">Source coverage</button>
+    </nav>
+    <main id="main">
+      <div class="workspace-header">
+        <h2 id="view-title" tabindex="-1">Reports</h2>
+        <div class="period">
+          <label>Fiscal year <input id="year" type="number" min="1900" max="2200" value="2090"></label>
+          <label>Quarter <select id="quarter"><option value="1">Q1</option><option value="2" selected>Q2</option><option value="3">Q3</option><option value="4">Q4</option></select></label>
+        </div>
+      </div>
+      <p id="status" class="notice" role="status" aria-live="polite" hidden></p>
+      <p id="error" class="notice error" role="alert" hidden></p>
+
+      <section id="view-reports" class="columns" aria-labelledby="view-title">
+        <article class="panel">
+          <div class="panel-head"><h3>Saved reports</h3><label class="check"><input type="checkbox" id="archived"> Archived</label></div>
+          <div id="report-list"></div>
+          <button id="more-reports" type="button" hidden>Load more reports</button>
+          <button class="ghost" data-go="templates">Start from a template</button>
+        </article>
+        <article class="panel">
+          <h3>Report details</h3>
+          <div id="report-detail"><p class="empty">Choose a saved report to open its versions and schedule.</p></div>
+        </article>
+      </section>
+
+      <section id="view-templates" class="columns" aria-labelledby="view-title" hidden>
+        <article class="panel">
+          <h3>Template gallery</h3>
+          <form id="template-start" class="flow">
+            <label>Template <select name="template" id="template-select" required></select></label>
+            <label>Bank <input name="bank" placeholder="SYN1-CA" list="banks"></label>
+            <button class="primary">Create draft</button>
+          </form>
+          <div id="template-list"></div>
+        </article>
+        <article class="panel">
+          <h3>Create personal template</h3>
+          <form id="template-save" class="flow">
+            <label>Saved report ID <input required name="report_id"></label>
+            <label>Version <input type="number" name="version" min="1" placeholder="Latest"></label>
+            <label>Template title <input required name="title" maxlength="100"></label>
+            <button>Create template</button>
+          </form>
+        </article>
+      </section>
+
+      <section id="view-draft" class="columns editor" aria-labelledby="view-title" hidden>
+        <article class="panel">
+          <div class="panel-head"><h3 id="draft-title">No open draft</h3><button id="refresh-draft" type="button" disabled>Refresh</button></div>
+          <p id="draft-revision" class="muted"></p>
+          <form id="draft-open" class="row">
+            <label>Draft ID <input required name="id"></label><button>Open draft</button>
+          </form>
+          <fieldset id="draft-controls" disabled>
+            <legend>Sections</legend>
+            <div id="section-list"></div>
+            <div class="actions"><button id="add-section" type="button">New section</button><button id="show-stages" type="button">Compiled stages</button></div>
+            <pre id="compiled" hidden></pre>
+            <form id="edit-section" class="flow">
+              <label for="section-json" id="section-label">Section specification</label>
+              <textarea id="section-json" rows="12" spellcheck="false" required></textarea>
+              <button>Apply section edit</button>
+            </form>
+            <form id="draft-preview" class="flow">
+              <label>Scope <select name="section_id" id="preview-scope"></select></label>
+              <label>Saved baseline run ID <input name="baseline_run_id" placeholder="Optional, same fiscal period"></label>
+              <label class="check"><input type="checkbox" name="gather"> Stop after gather</label>
+              <div class="actions"><button>Run preview</button><button id="save-draft" type="button" class="primary">Save version</button></div>
+            </form>
+          </fieldset>
+        </article>
+        <article class="panel chat-panel">
+          <h3>Chat</h3>
+          <p id="conversation-label" class="muted">Open a draft to start a conversation.</p>
+          <form id="chat-send" class="flow">
+            <label>Message <textarea name="message" rows="3" maxlength="2000" required placeholder="Make this section staged."></textarea></label>
+            <div class="actions"><button class="primary" id="send-turn" disabled>Send</button><button id="pause-stream" type="button" disabled>Pause stream</button><button id="resume-stream" type="button" disabled>Resume</button><button id="cancel-turn" type="button" disabled>Cancel turn</button></div>
+          </form>
+          <div id="chat-message" class="chat-message" aria-live="polite"></div>
+          <details open><summary>Turn events</summary><ol id="chat-events" class="events"></ol></details>
+          <div id="proposal"></div>
+        </article>
+      </section>
+
+      <section id="view-runs" class="columns" aria-labelledby="view-title" hidden>
+        <article class="panel">
+          <h3>Run status</h3>
+          <form id="run-open" class="row">
+            <label>Run ID <input name="id" required></label><button>Open run</button>
+          </form>
+          <div id="run-status"></div>
+          <div id="exports" class="actions" hidden>
+            <button data-export="html">Export HTML</button><button data-export="json">Export JSON</button><button data-export="pdf" id="export-pdf">Export PDF</button>
+          </div>
+          <div id="run-output"></div>
+        </article>
+        <aside class="panel evidence" aria-labelledby="citation-title">
+          <h3 id="citation-title" tabindex="-1">Citation drawer</h3>
+          <div id="citation-detail"><p class="empty">Open a citation from a run to see its source and excerpt.</p></div>
+        </aside>
+      </section>
+
+      <section id="view-sources" class="columns" aria-labelledby="view-title" hidden>
+        <article class="panel">
+          <h3>Probe a source</h3>
+          <form id="probe" class="flow">
+            <label>Source <select name="source"><option value="benchmarking">Benchmarking</option><option value="transcripts">Earnings transcripts</option><option value="investor_presentation">Investor slides</option><option value="rts">Reports to shareholders</option><option value="supplementary_financials">Supplementary financials</option><option value="event_transcripts">Event transcripts</option><option value="pillar3">Pillar 3</option></select></label>
+            <label>Bank <input name="bank" list="banks" value="SYN1-CA" required></label>
+            <label>Metric <input name="metric" value="Net Income"></label>
+            <label>Segment <input name="segment" value="Enterprise" required></label>
+            <button class="primary">Probe source</button>
+          </form>
+        </article>
+        <article class="panel"><h3>Probe result</h3><div id="probe-result"><p class="empty">Choose a bank, source and period to check coverage.</p></div></article>
+      </section>
+    </main>
+  </div>
+  <datalist id="banks"></datalist>
+</body>
+</html>

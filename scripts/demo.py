@@ -226,6 +226,8 @@ def demonstrate_chat(client, wait=wait_for_run, show=print):
     peer = result["sections"][1]["peers"][0]
     assert peer["reason"] is None and peer["median"] == "47.7"
     show(f"  Preview FY2090 Q2 peer median: {peer['median']} {peer['unit']}.")
+    assert peer["direction"] == "lower_is_better" and peer["ranks"][0]["bank"] == "SYN1-CA"
+    show("  Peer ranking direction: lower is better.")
     for row in peer["ranks"]:
         show(f"    #{row['rank']} {row['bank']}: {row['value']} {peer['unit']}")
     accepted = submit(client, "POST", f"{tpath}/accept", {"revision": turn["proposal"]["revision"]})

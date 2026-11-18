@@ -76,9 +76,15 @@ class BenchmarkFact(StrictModel):
     currency: str | None
     currency_confirmed: bool | None
     peer_currency: str | None = Field(default=None, exclude=True)
+    higher_is_better: bool | None = Field(default=None, exclude=True)
     raw_qoq: Decimal | None
     raw_yoy: Decimal | None
     change_basis: ChangeBasis
+    citation: Citation
+
+
+class FollowingChunk(StrictModel):
+    text: str
     citation: Citation
 
 
@@ -92,6 +98,8 @@ class Passage(StrictModel):
     relevance: float | None = None
     heading: str | None = None
     terms: tuple[str, ...] = ()
+    begins_mid_sentence: bool = False
+    following: FollowingChunk | None = None
     citation: Citation
 
 
@@ -110,10 +118,11 @@ def vector_literal(vector: list[float] | None) -> str | None:
 
 
 class SourceIssue(Exception):
-    def __init__(self, state: Readiness, reason: str):
+    def __init__(self, state: Readiness, reason: str, choices: tuple[Bank, ...] = ()):
         super().__init__(reason)
         self.state = state
         self.reason = reason
+        self.choices = choices
 
 
 class SourceAdapter(Protocol):
@@ -156,7 +165,7 @@ class BankCatalog:
         ] or [bank for bank in banks if folded == bank.symbol.rsplit("-", 1)[0].casefold()]
         if len(matches) != 1:
             reason = "ambiguous_bank" if matches else "unknown_bank"
-            raise SourceIssue(Readiness.UNKNOWN, reason)
+            raise SourceIssue(Readiness.UNKNOWN, reason, tuple(matches[:12]))
         return matches[0]
 
     def hinted(self, conn: SourceConnection, scope: Scope, source: SourceName) -> bool:
@@ -178,7 +187,7 @@ class BenchmarkingSource:
         return conn.execute("""
             SELECT b.bank_symbol, b.bank, b."Parameter" AS metric, b."Platform" AS segment,
                    b."Actual" AS actual, b."QoQ" AS qoq, b."YoY" AS yoy,
-                   b."BPS" AS bps, b."Units" AS row_units, b.updated_at, b.filepath, m.unit
+                   b."BPS" AS bps, b."Units" AS row_units, b.updated_at, b.filepath, m.unit, m.higher_is_better
             FROM public.benchmarking_report b
             LEFT JOIN public.kpi_metadata m ON m.kpi_name = b."Parameter"
             WHERE b.bank_symbol = %s AND b.fiscal_year = %s AND b.quarter = %s
@@ -241,7 +250,7 @@ class BenchmarkingSource:
         return [BenchmarkFact(
             bank=scope.bank.symbol, period=scope.period, metric=row["metric"], segment=row["segment"],
             actual=row["actual"], unit=unit, unit_source=unit_source, currency=currency, currency_confirmed=False if currency else None,
-            peer_currency=peer_currency, raw_qoq=row["qoq"], raw_yoy=row["yoy"], change_basis=basis, citation=citation,
+            peer_currency=peer_currency, higher_is_better=row["higher_is_better"], raw_qoq=row["qoq"], raw_yoy=row["yoy"], change_basis=basis, citation=citation,
         )]
 
     def anchors(self, conn: SourceConnection, scope: Scope) -> list[Citation]:

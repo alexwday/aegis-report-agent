@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 from fastapi import HTTPException
 from psycopg.types.json import Jsonb
 
+from .chat_models import apply_operations
 from .db import connect
 from .models import (
     DraftPatch,
@@ -70,6 +71,16 @@ class Reports:
                 spec = ReportSpec(title=spec.title, sections=list(sections.values()))
             except ValueError as exc:
                 raise HTTPException(422, "invalid_report_scope") from exc
+            return self._write_draft(conn, owner, draft_id, spec)
+
+    def apply_operations(self, owner, draft_id, patch):
+        with connect(self.dsn) as conn:
+            draft = self._draft(conn, owner, draft_id, lock=True)
+            self._assert_revision(draft, patch.revision)
+            try:
+                spec = apply_operations(ReportSpec.model_validate(draft["spec"]), patch.operations)
+            except ValueError as exc:
+                raise HTTPException(422, "invalid_tool_arguments_or_patch") from exc
             return self._write_draft(conn, owner, draft_id, spec)
 
     def _write_draft(self, conn, owner, draft_id, spec):

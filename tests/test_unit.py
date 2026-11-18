@@ -274,3 +274,36 @@ def test_chat_function_calls_keep_tool_data_in_tool_messages():
         assert run_model_turn(gateway, "Read the draft", [], lambda *_: {"revision": 1}, monotonic() + 3) == (
             "Read revision one."
         )
+
+
+def test_real_eval_credential_hooks_resolve_per_request_and_fail_safely(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    from eval_support import credential_provider, evaluation_gateway
+
+    from aegis_report.gateway import GatewayError
+
+    module = ModuleType("fixture_eval_identity")
+    calls = []
+    module.headers = lambda: {"X-Fixture-Token": str(len(calls) + 1)}
+    module.invalid = lambda: {"X-Fixture-Token": "invalid\nheader"}
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    monkeypatch.setenv("INTERNAL_LLM_URL", "https://gateway.example.invalid")
+    monkeypatch.setenv("CHAT_MODEL", "fixture-model")
+    monkeypatch.setenv("AEGIS_EVAL_CREDENTIALS_HOOK", f"{module.__name__}:headers")
+
+    def upstream(request):
+        calls.append(request.headers["X-Fixture-Token"])
+        return httpx.Response(200, json={"choices": [{"message": {"content": "NONE"}}]})
+
+    with httpx.Client(transport=httpx.MockTransport(upstream)) as client:
+        gateway = evaluation_gateway("real", client)
+        gateway.choose_observation("Find a cited value", ["one"])
+        gateway.choose_observation("Find a cited value", ["two"])
+        assert calls == ["1", "2"]
+        invalid = evaluation_gateway("real", client, f"{module.__name__}:invalid")
+        with pytest.raises(GatewayError, match="credentials_provider_unavailable"):
+            invalid.choose_observation("Find a cited value", ["two"])
+    with pytest.raises(ValueError, match="could not be loaded"):
+        credential_provider("missing_test_provider:headers")

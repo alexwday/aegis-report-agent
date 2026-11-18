@@ -77,6 +77,8 @@ def generate_section(
                           for claim in draft_themes(section.instruction, passages, gateway)]
                 if multi_bank:
                     banks_by_id = {passage.citation.id: passage.bank for passage in passages}
+                    banks_by_id.update((passage.following.citation.id, passage.bank)
+                                       for passage in passages if passage.following)
                     for claim in claims:
                         claim["banks"] = sorted({banks_by_id[id_] for id_ in claim["evidence_ids"]})
                         claim["key"] = ",".join(claim["banks"]) + ":" + claim["key"]

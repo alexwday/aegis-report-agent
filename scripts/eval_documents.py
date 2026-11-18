@@ -23,6 +23,7 @@ def main() -> None:
     parser.add_argument("--claims", action="store_true")
     parser.add_argument("--instruction", default="Highlight substantive financial drivers and quantitative changes.")
     parser.add_argument("--gateway", choices=("stub", "real"), default="stub")
+    parser.add_argument("--credentials-hook", metavar="MODULE:FUNCTION")
     args = parser.parse_args()
     if not args.topic and not args.term:
         parser.error("Provide a --topic or one or more --term arguments.")
@@ -32,7 +33,7 @@ def main() -> None:
         parser.error("Set SOURCE_DATABASE_URL to a read-only DSN.")
     with httpx.Client(trust_env=False) as client, connect(dsn, source=True) as conn:
         try:
-            gateway = evaluation_gateway(args.gateway, client)
+            gateway = evaluation_gateway(args.gateway, client, args.credentials_hook)
         except ValueError as exc:
             parser.error(str(exc))
         bank = BankCatalog().resolve(conn, args.bank)
@@ -49,7 +50,8 @@ def main() -> None:
             for index, hit in enumerate(hits, 1):
                 words = " ".join(hit.text.split())
                 excerpt = words[:220]
-                print(f"  {index}. {hit.citation.locator} (lexical rank {hit.relevance:.5f})")
+                distance = f", vector distance {hit.distance:.5f}" if hit.distance is not None else ""
+                print(f"  {index}. {hit.citation.locator} (lexical score {hit.relevance:.5f}{distance})")
                 print(f"     {excerpt}" + ("…" if len(words) > 220 else ""))
             if args.claims:
                 print_claims(hits, args.instruction, gateway)

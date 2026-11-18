@@ -13,7 +13,7 @@
 | T-011 | G3 | Expose typed stage output and gather-only previews. | DONE | [Stage compiler](../../src/aegis_report/models.py), [engine](../../src/aegis_report/engine.py) |
 | T-012 | G3 | Add personal templates and offline PDF export. | DONE | [PDF](../../src/aegis_report/pdf_export.py), [system templates](../../src/aegis_report/templates.py) |
 | T-013 | G4 | Build chat turn lifecycle, typed tools, resumable SSE, fallback turn result and provider tests. | DONE | [Chat agent](../../src/aegis_report/chat_agent.py), [tests](../../tests/test_postgres.py) |
-| T-014 | G5 | Build a thin developer console and write the Functions Assist UI/SSE contracts. | TODO | |
+| T-014 | G5 | Deliver the local developer console and Functions Assist specification. | DONE | [Console](../../ui/index.html), [UI handoff](../integration/functions-assist-ui.md) |
 | T-015 | G6 | Implement quarterly scheduling and corrections, readiness, retries, fencing and opt-in provisional publication. | TODO | |
 | T-016 | G7 | Complete security/privacy review, load/cost testing, OpenAPI contract, and operations handoff. | TODO | |
 | T-017 | G1 | Complete the template, patch, preview diff, version and next-quarter worker slice. | DONE | [HTTP demo](../../scripts/demo.py), [PostgreSQL test](../../tests/test_postgres.py) |
@@ -37,3 +37,8 @@
 | T-035 | G4 | Run chat acceptance cases and provide stub and real gateway evaluation. | DONE | [Cases](../../tests/fixtures/chat_requests.json), [evaluation](../../scripts/eval_chat.py) |
 | T-036 | G4 | Demonstrate chat preview, accept, diff and save. Add PDF headers and schedule history. | DONE | [Demo](../../scripts/demo.py), [API contract](../../api/openapi.json) |
 | T-037 | G4 | Submit S-005 and wait at G4 for R-005. | DONE | [S-005](status/S-005.md), `review-005` |
+| T-038 | G5 | Complete document claims and tune RTS relevance and boilerplate filtering. | DONE | [Tests](../../tests/test_postgres.py), [evaluator](../../scripts/eval_documents.py) |
+| T-039 | G5 | Use KPI metadata to rank peers, show unknown direction and list missing banks. | DONE | [Peer calculation](../../src/aegis_report/peers.py), [evaluator](../../scripts/eval_peers.py) |
+| T-040 | G5 | Add per-call real model credentials hook and shared reason wording. | DONE | [Evaluation guide](../integration/evaluation.md), [catalog](../../src/aegis_report/reasons.py) |
+| T-041 | G5 | Deliver API guide, captured examples, operations notes and revised demo. | DONE | [Guide](../integration/api-guide.md), [examples](../integration/api-examples.md) |
+| T-042 | G5 | Submit S-006 and wait at G5 for R-006. | REVIEW | [S-006](status/S-006.md), `review-006` |

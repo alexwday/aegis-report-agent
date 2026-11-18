@@ -210,7 +210,10 @@ class ChatStore:
                 return {"draft_id": draft_id, "revision": turn["applied_revision"]}
             draft = self.reports._draft(conn, owner, draft_id, lock=True)
             self.reports._assert_revision(draft, revision)
-            updated = apply_operations(ReportSpec.model_validate(draft["spec"]), proposal.operations)
+            try:
+                updated = apply_operations(ReportSpec.model_validate(draft["spec"]), proposal.operations)
+            except ValueError as exc:
+                raise HTTPException(409, "proposal_operation_conflict") from exc
             saved = self.reports._write_draft(conn, owner, draft_id, updated)
             conn.execute("""
                 UPDATE rpt.chat_turns SET applied_revision = %s WHERE id = %s

@@ -12,6 +12,7 @@ from .documents import build_sources
 from .engine import evidence_excerpt
 from .gateway import GatewayError
 from .models import BIG_SIX, BenchmarkInput, DocumentInput, EarningsInput, Period, ReportSpec, SourceName
+from .reasons import reason_message
 from .repository import Reports
 from .sources import BankCatalog, Passage, Scope, SourceIssue
 from .stub_planner import plan_stub
@@ -141,9 +142,10 @@ class TurnSession:
             args = schema.model_validate(data)
             return getattr(self, name)(args)
         except SourceIssue as exc:
-            return {"error": exc.reason}
+            return {"error": exc.reason, "message": reason_message(exc.reason),
+                    "choices": [{"symbol": bank.symbol, "name": bank.name} for bank in exc.choices]}
         except HTTPException as exc:
-            return {"error": exc.detail}
+            return {"error": exc.detail, "message": reason_message(exc.detail)}
         except ValueError:
             return {"error": "invalid_tool_arguments_or_patch"}
 
@@ -180,8 +182,9 @@ class TurnSession:
         with connect(self.agent.settings.source_dsn, source=True) as conn:
             adapter, scope = self.selection(conn, args)
             probe = adapter.probe(conn, scope)
-            return {"bank": scope.bank.symbol, "period": scope.period.model_dump(),
-                    "state": probe.state, "reason": probe.reason, "generation": probe.generation}
+            return {"bank": scope.bank.symbol, "period": scope.period.model_dump(), "state": probe.state,
+                    "reason": probe.reason, "generation": probe.generation,
+                    "message": reason_message(probe.reason) if probe.reason else None}
 
     def search_evidence(self, args):
         with connect(self.agent.settings.source_dsn, source=True) as conn:
@@ -234,7 +237,7 @@ class TurnSession:
         for name, args in plan_stub(self.job["user_message"], self.spec):
             result = self.invoke(name, args)
             if result.get("error"):
-                return f"Request needs clarification ({result['error']})."
+                return result.get("message") or reason_message(result["error"])
             if name == "propose_patch":
                 message = "I prepared a draft edit. Review and accept the proposal to apply it."
             elif name == "start_preview":

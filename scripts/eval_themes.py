@@ -19,6 +19,7 @@ def main() -> None:
     parser.add_argument("--topic", required=True)
     parser.add_argument("--instruction", default="Highlight substantive financial drivers and quantitative changes.")
     parser.add_argument("--gateway", choices=("stub", "real"), default="stub")
+    parser.add_argument("--credentials-hook", metavar="MODULE:FUNCTION")
     args = parser.parse_args()
     period = Period(year=args.year, quarter=args.quarter)
     dsn = os.environ.get("SOURCE_DATABASE_URL")
@@ -26,7 +27,7 @@ def main() -> None:
         parser.error("Set SOURCE_DATABASE_URL to a read-only DSN.")
     with httpx.Client(trust_env=False) as client, connect(dsn, source=True) as conn:
         try:
-            gateway = evaluation_gateway(args.gateway, client)
+            gateway = evaluation_gateway(args.gateway, client, args.credentials_hook)
         except ValueError as exc:
             parser.error(str(exc))
         bank = BankCatalog().resolve(conn, args.bank)

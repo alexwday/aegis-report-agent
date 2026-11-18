@@ -423,9 +423,9 @@ def test_taxonomy_and_free_terms_put_relevant_documents_ahead_of_early_mentions(
     selected = replace(scope(admin), topics=("Net Interest Income & Margins",))
     for adapter, page in ((SlideSource(0.35), 19), (RtsSource(0.35), 18)):
         hits = adapter.search(admin, selected)
-        assert len(hits) >= 2
         assert hits[0].citation.locator.endswith(f"page {page}")
-        assert hits[0].relevance > hits[1].relevance
+        if len(hits) > 1:
+            assert hits[0].relevance > hits[1].relevance
         terms_only = replace(selected, topics=(), terms=("net interest margin",))
         assert adapter.search(admin, terms_only)[0].citation.locator.endswith(f"page {page}")
 
@@ -442,8 +442,9 @@ def test_ticker_fallback_is_unique(admin):
         VALUES (904, 'Other synthetic bank', 'SYN3-CA', 2090, 'Q3'),
                (905, 'Synthetic US affiliate', 'SYN1-US', 2090, 'Q3')
     """)
-    with pytest.raises(SourceIssue, match="ambiguous_bank"):
+    with pytest.raises(SourceIssue, match="ambiguous_bank") as result:
         catalog.resolve(admin, "SYN3")
+    assert [bank.symbol for bank in result.value.choices] == ["SYN3-CA", "SYN3-US"]
     assert catalog.resolve(admin, "SYN3-US").id == 903
     assert catalog.resolve(admin, "SYN1").symbol == "SYN1-CA"
 
@@ -724,8 +725,11 @@ def test_document_claims_quote_bullets_and_exclude_reference_sections(admin):
     adapter = SlideSource(0.35)
     selected = replace(scope(admin), topics=("Net Interest Income & Margins",))
     samples = adapter.search(admin, selected)
-    bullet = "Net interest margin increased 15 basis points as fictional funding costs eased"
-    head = samples[0].model_copy(update={"heading": "Highlights", "text": f"## Highlights\n• {bullet}"})
+    bullet = "Net interest margin increased 15 basis points as fictional funding costs eased."
+    head = samples[0].model_copy(update={
+        "heading": "Highlights",
+        "text": f"## Highlights\n• Net interest margin grew by 90 basis points due to:\n• {bullet}",
+    })
     glossary = samples[-1].model_copy(update={
         "heading": "Glossary",
         "text": "Net interest margin is calculated as sample interest income divided by sample average assets.",
@@ -898,3 +902,114 @@ def test_named_peer_scope_uses_core_symbols_with_catalog_tags(settings):
     finally:
         with connect(os.environ["RPT_MIGRATION_DATABASE_URL"]) as conn:
             conn.execute("DELETE FROM public.aegis_data_availability WHERE bank_id BETWEEN 9950 AND 9955")
+
+
+def test_rts_joins_adjacent_chunks_and_prefers_figures_over_weak_or_reference_hits(admin):
+    from aegis_report.claims import candidates_for
+
+    admin.execute("""
+        INSERT INTO public.rts_embedding
+            (created_at, chunk_id, page_no, bank, quarter, year, filename, raw_text, source_section, summary_title, embedding)
+        SELECT d.created_at, item.chunk, item.page, d.bank, d.quarter, d.year, d.filename, item.body,
+               item.section, item.title, d.embedding
+        FROM public.rts_embedding d CROSS JOIN (VALUES
+            (400, 80, 'Net interest margin increased by 47 basis points as the fictional business expanded,',
+             'MD&A > Net interest margin', 'Net interest margin'),
+            (401, 80, 'while sample funding costs continued to fall substantially. The deposit base remained steady.',
+             'MD&A > Net interest margin', 'Loan performance'),
+            (402, 81, '<figure> Net interest margin was 50 basis points on this sample cover page. </figure>',
+             'Introduction', 'Net interest margin'),
+            (403, 82, 'Net interest margin is defined as a sample amount over assets. More general details follow here.',
+             'Glossary of terms', 'Net interest margin'),
+            (404, 83, 'This fictional report mentions the net interest margin in passing and lists other group activities.',
+             'Business Overview', 'General strategy'),
+            (411, 91, 'and net interest margin rose by 88 basis points, with a fragment ending here.',
+             'MD&A > Net interest margin', 'Net interest margin')
+        ) item(chunk, page, body, section, title)
+        WHERE d.bank = 'SYN1-CA' AND d.page_no = 9
+    """)
+    hits = RtsSource(0.35).search(admin, replace(scope(admin), terms=("net interest margin",)))
+    assert hits[0].citation.locator.endswith("page 80")
+    assert len(hits) < 8
+    assert not any(hit.citation.locator.endswith(("page 81", "page 82", "page 83")) for hit in hits)
+    candidates = candidates_for(hits, "Explain the net interest margin.")
+    assert "expanded, while sample funding costs continued to fall substantially." in candidates[0].text
+    assert candidates[0].citation.locator.endswith("chunks 400–401")
+    assert all(not candidate.text.startswith(("and ", "while ")) and candidate.text.endswith(".")
+               for candidate in candidates)
+
+
+def test_peer_direction_missing_reasons_and_order_without_rank(admin):
+    from aegis_report.models import SectionSpec
+    from aegis_report.peers import peer_statistics
+
+    metric = "Efficiency Ratio"
+    adapter = BenchmarkingSource({"CA": "CAD"})
+    left = scope(admin, quarter=2, bank="SYN1-CA", metric=metric)
+    right = scope(admin, quarter=2, bank="SYN2-CA", metric=metric)
+    rows = adapter.search(admin, left) + adapter.search(admin, right)
+    spec = SectionSpec(id="efficiency", title=metric, banks=[left.bank.symbol, right.bank.symbol],
+                       instruction="Compare the ratio.", sources=[{"metric": metric}])
+    ranked = peer_statistics(spec, left.period, rows)[0]
+    assert ranked["direction"] == "lower_is_better" and ranked["ranks"][0]["bank"] == "SYN1-CA"
+    assert ranked["ranks"][0]["rank"] == 1 and ranked["low"] == "47.2" and ranked["high"] == "48.2"
+    missing = peer_statistics(spec, left.period, rows[:1])[0]
+    assert missing["reason"] == "missing_member" and missing["missing_banks"] == ["SYN2-CA"]
+    unknown = peer_statistics(spec, left.period, [row.model_copy(update={"higher_is_better": None}) for row in rows])[0]
+    assert unknown["direction"] == "highest_to_lowest" and unknown["ranks"] == []
+    assert unknown["ordered_values"][0]["bank"] == "SYN2-CA" and "rank" not in unknown["ordered_values"][0]
+
+
+def test_local_console_identity_switch_and_manual_section_operations(settings):
+    with TestClient(create_app(settings)) as client, TestClient(
+        create_app(settings, LocalAuth("other"))
+    ) as protected:
+        console = client.get("/console")
+        assert console.is_success and "Developer console" in console.text
+        assert "default-src 'none'" in console.headers["content-security-policy"]
+        assert client.get("/console/app.js").is_success and client.get("/console/app.css").is_success
+        identities = submit(client, "GET", "/console/context")["identities"]
+        assert len(identities) >= 2
+        assert protected.get("/console").status_code == 404
+        assert protected.get("/console/context").status_code == 404
+        assert protected.get("/v1/reasons", headers={"X-Aegis-Local-Identity": identities[0]}).is_success
+
+        draft = submit(client, "POST", "/v1/drafts", {"bank": "SYN1"})
+        path = f"/v1/drafts/{draft['id']}"
+        other = {"X-Aegis-Local-Identity": identities[1]}
+        assert client.get(path, headers=other).status_code == 404
+        assert client.get(path, headers={"X-Aegis-Local-Identity": "invalid"}).status_code == 422
+        patch_body = {"revision": 1, "operations": [{"op": "set_mode", "section_id": "net-income", "mode": "staged"}]}
+        assert client.patch(path + "/operations", headers=other, json=patch_body).status_code == 404
+        changed = submit(client, "PATCH", path + "/operations", patch_body)
+        assert changed["spec"]["sections"][0]["mode"] == "staged"
+        assert client.patch(path + "/operations", json=patch_body).status_code == 409
+        stub = submit(client, "POST", path + "/previews", {
+            "revision": changed["revision"], "period": Q2, "section_id": "net-income", "stop_after": "gather",
+        })
+        assert Worker(settings, StubGateway()).run_one()
+        output = submit(client, "GET", f"/v1/runs/{stub['id']}/output.json")
+        entry = output["readiness"]["net-income:0"]
+        assert entry["section_id"] == "net-income" and entry["message"] == "This source returned evidence."
+        assert submit(client, "GET", "/v1/reasons")[entry["evidence_state"]] == entry["message"]
+
+
+def test_chat_acceptance_conflict_for_stored_operations_and_matching_revision(settings):
+    from aegis_report.chat_agent import ChatAgent
+
+    with TestClient(create_app(settings)) as client:
+        draft = submit(client, "POST", "/v1/drafts", {"bank": "SYN1"})
+        conversation = submit(client, "POST", "/v1/conversations", {"draft_id": draft["id"], "period": Q2})
+        base = f"/v1/conversations/{conversation['id']}/turns"
+        turn = submit(client, "POST", base, {"message": "Make Net income staged.", "request_key": "conflict"})
+        assert ChatAgent(settings, StubGateway()).run_one()
+        # Simulate a stored proposal whose target is stale even though its revision matches.
+        with connect(os.environ["RPT_MIGRATION_DATABASE_URL"]) as conn:
+            conn.execute("""
+                UPDATE rpt.chat_turns SET proposal = jsonb_set(proposal, '{operations,0,section_id}', '"absent-section"')
+                WHERE id = %s
+            """, (turn["id"],))
+        response = client.post(f"{base}/{turn['id']}/accept", json={"revision": 1})
+        assert response.status_code == 409
+        assert response.json()["detail"] == "proposal_operation_conflict"
+        assert submit(client, "GET", f"/v1/drafts/{draft['id']}")["revision"] == 1

@@ -43,6 +43,7 @@ if (( attempt == 100 )); then
     exit 1
 fi
 echo "Local API and worker ready at http://127.0.0.1:$port"
+echo "Developer console: http://127.0.0.1:$port/console"
 if [[ "$mode" == --demo ]]; then
     if [[ -n "${AEGIS_DEMO_PDF:-}" ]]; then
         .venv/bin/python scripts/demo.py "http://127.0.0.1:$port" --automatic-fixture --pdf-output "$AEGIS_DEMO_PDF"

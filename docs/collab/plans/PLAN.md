@@ -58,11 +58,11 @@ The engine uses exact decimals. It preserves raw QoQ/YoY and labels the change b
 
 ## API, authentication and UI
 
-See the [generated OpenAPI](../../../api/openapi.json) for G4. The paths cover template and bank catalogs, source probes, draft revisions and stage inspection, save and saved versions, runs, previews, formats and evidence. Ownership uses the single `get_current_user()` interface, authenticated subject only, with an explicitly local fixed provider and a configured upstream GET bearer exchange. Resource lookups return 404 outside the caller's scope. Save and revision conflicts return 409. Production auth accepts a bounded, safe upstream detail and fails closed on timeout or service outage. A deployment must provide an active-owner checker before saved report generation. The assistant and the reporting flow share a configurable internal chat/embedding provider interface with per-call credentials. A deterministic stub powers local and integration tests.
+See the [generated OpenAPI](../../../api/openapi.json) for G5. The paths cover template and bank catalogs, source probes, draft revisions and stage inspection, save and saved versions, runs, previews, formats and evidence. Ownership uses the single `get_current_user()` interface, authenticated subject only, with an explicitly local fixed provider and a configured upstream GET bearer exchange. Resource lookups return 404 outside the caller's scope. Save and revision conflicts return 409. Production auth accepts a bounded, safe upstream detail and fails closed on timeout or service outage. A deployment must provide an active-owner checker before saved report generation. The assistant and the reporting flow share a configurable internal chat/embedding provider interface with per-call credentials. A deterministic stub powers local and integration tests.
 
 G4 persists conversation-scoped turns with POST-to-create, authenticated GET SSE using `Last-Event-ID`, and JSON result fallback. Events show queueing, start, tool progress, proposal, preview, final message, terminal state and proposal acceptance. Model tools resolve scope, inspect coverage, retrieve limited evidence, read the draft, propose a typed patch, request a preview and explain a diff. Apply, save and schedule remain explicit caller actions. G5 should evaluate the real gateway against the synthetic request corpus and rerun lexical and real-vector source evaluations on approved sources.
 
-G5 is a thin developer console and written UI spec for Functions Assist. A separate team is already designing the demo interface. The developer console should exercise every API endpoint and SSE event, including reconnect and failures. The written UI spec covers template selection, ordered section editing, conditions for preview and save, diff and citations, report generation state, access errors and controls.
+G5 delivers a thin loopback console and the written Functions Assist integration handoff. The console exercises templates, draft section edits, previews, chat, reconnect, citations, schedules, and exports through the existing API. Real-provider quality and latency remain with the reviewer. [UI specification](../../integration/functions-assist-ui.md), [API guide](../../integration/api-guide.md)
 
 ## Safety and operations
 
@@ -88,7 +88,7 @@ Schedule definitions are owner-scoped, revisioned and pin a saved version and qu
 | G2 Evidence | T-009–T-010, T-020–T-025 | 5–8 | Exact source catalog, immediate previews, fiscal presets, multi-source themes, slides/RTS, detailed diffs, and automatic-path demo. |
 | G3 Reports | T-011–T-012, T-026–T-031 | 6–10 | Ranked retrieval and reviewer harnesses, staged previews, report and template lifecycle, cited PDF, and schedule definitions. |
 | G4 Chat | T-013, T-032–T-037 | 4–6 | Document relevance, multi-bank comparisons, typed draft tools, durable turns and replayable SSE. |
-| G5 Handoff | T-014 | 4–6 | Developer console and written UI/SSE contract for Functions Assist. |
+| G5 Handoff | T-014, T-038–T-042 | 4–6 | Developer console and written UI/SSE contract for Functions Assist. |
 | G6 Scheduling | T-015 | 5–8 | Toronto default timezone, zero extra maturity lag, 14-day correction window, complete required inputs by default, opt-in provisional publication, retries and concurrency controls. |
 | G7 Hardening | T-016 | 4–7 | Approved retention and authorization wiring, load/cost results, deployment, Compose option and security review. |
 

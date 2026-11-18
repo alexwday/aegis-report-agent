@@ -24,6 +24,8 @@ class GatewayError(Exception):
 
 
 class StubGateway:
+    supports_semantic_ranking = False
+
     def draft_claims(self, instruction: str, evidence: list[dict[str, str]]) -> object:
         # Deterministic fixture behavior: one cited assertion for each available topic and source.
         claims = []
@@ -47,6 +49,8 @@ class StubGateway:
 
 @dataclass
 class InternalGateway:
+    supports_semantic_ranking = True
+
     client: httpx.Client
     url: str
     chat_model: str

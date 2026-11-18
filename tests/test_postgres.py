@@ -412,3 +412,58 @@ def test_model_calls_run_after_claim_transaction_and_expired_owner_cannot_finali
         assert Worker(settings, SlowGateway(), clock=lambda: time[0]).run_one()
         output = submit(client, "GET", f"{path}/output.json")
         assert output["sections"][0]["note"]["citation_id"]
+
+
+def test_taxonomy_and_free_terms_put_relevant_documents_ahead_of_early_mentions(admin):
+    selected = replace(scope(admin), topics=("Net Interest Income & Margins",))
+    for adapter, page in ((SlideSource(0.35), 19), (RtsSource(0.35), 18)):
+        hits = adapter.search(admin, selected)
+        assert len(hits) >= 2
+        assert hits[0].citation.locator.endswith(f"page {page}")
+        assert hits[0].relevance > hits[1].relevance
+        terms_only = replace(selected, topics=(), terms=("net interest margin",))
+        assert adapter.search(admin, terms_only)[0].citation.locator.endswith(f"page {page}")
+
+
+def test_ticker_fallback_is_unique(admin):
+    admin.execute("""
+        UPDATE public.aegis_data_availability SET bank_aliases = NULL WHERE bank_symbol = 'SYN3-US'
+    """)
+    catalog = BankCatalog()
+    assert catalog.resolve(admin, "syn3").symbol == "SYN3-US"
+    admin.execute("""
+        INSERT INTO public.aegis_data_availability
+            (bank_id, bank_name, bank_symbol, fiscal_year, quarter)
+        VALUES (904, 'Other synthetic bank', 'SYN3-CA', 2090, 'Q3')
+    """)
+    with pytest.raises(SourceIssue, match="ambiguous_bank"):
+        catalog.resolve(admin, "SYN3")
+    assert catalog.resolve(admin, "SYN3-US").id == 903
+
+
+def test_failed_lease_attempts_have_terminal_cap(settings):
+    worker = Worker(settings, StubGateway())
+    with TestClient(create_app(settings)) as client:
+        draft = submit(client, "POST", "/v1/drafts", {"bank": "SYN1-CA"})
+        pending = submit(client, "POST", f"/v1/drafts/{draft['id']}/previews", {"revision": 1, "period": Q3})
+        now = datetime.now(UTC) + timedelta(seconds=1)
+        for index in range(3):
+            assert str(worker._claim(now + timedelta(minutes=index * 4))["id"]) == pending["id"]
+        assert worker._claim(now + timedelta(minutes=12)) is None
+        result = submit(client, "GET", f"/v1/runs/{pending['id']}")
+        assert result["state"] == "failed" and result["error_code"] == "attempts_exhausted"
+
+
+def test_real_shaped_earnings_fallback_chooses_substance(admin):
+    from aegis_report.claims import draft_themes
+
+    class BrokenGateway(StubGateway):
+        def draft_claims(self, instruction, evidence):
+            return {"invalid": True}
+
+    wanted = replace(scope(admin), topics=("Net Interest Income & Margins",))
+    passages = EarningsSource().search(admin, wanted)
+    assert "Good morning" in passages[0].text
+    answer = draft_themes("Identify net interest margin and funding drivers", passages, BrokenGateway())
+    assert answer[0].method == "fallback_quote"
+    assert answer[0].text == "The net interest margin expanded 12 basis points as deposit costs eased."

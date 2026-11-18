@@ -54,9 +54,16 @@ class EarningsInput(StrictModel):
 
 class DocumentInput(StrictModel):
     source: Literal["investor_presentation", "rts"]
-    topic: Label
+    topic: Label | None = None
+    terms: list[Label] = Field(default_factory=list, max_length=8)
     vector: bool = False
     required: bool = True
+
+    @model_validator(mode="after")
+    def search_focus(self) -> "DocumentInput":
+        if self.topic is None and not self.terms:
+            raise ValueError("Provide a taxonomy topic or free-text search terms")
+        return self
 
 
 SectionInput = BenchmarkInput | EarningsInput | DocumentInput
@@ -140,7 +147,7 @@ def source_identity(item: SectionInput) -> tuple[str, ...]:
         return (item.source, item.metric, item.segment)
     if isinstance(item, EarningsInput):
         return (item.source, *sorted({topic.casefold() for topic in item.topics}))
-    return (item.source, item.topic.casefold())
+    return (item.source, (item.topic or "").casefold(), *sorted({term.casefold() for term in item.terms}))
 
 
 class ReportSpec(StrictModel):

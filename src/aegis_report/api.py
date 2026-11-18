@@ -92,6 +92,7 @@ class Observation(Probe):
     bank: str | None = None
     required: bool = True
     selector: dict | None = None
+    evidence_state: Literal["matched", "no_match"] | None = None
 
 
 class RunResponse(StrictModel):
@@ -114,6 +115,7 @@ class Comparison(StrictModel):
     citation_ids: list[str]
     metric: str | None = None
     segment: str | None = None
+    provenance: Literal["vendor_qoq", "vendor_yoy", "rounded_actuals"] | None = None
 
 
 class Note(StrictModel):

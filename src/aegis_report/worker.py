@@ -10,6 +10,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from .auth import OwnerStatusChecker, UnwiredOwnerStatus
+from .claims import shortlist_passages
 from .config import Settings
 from .db import connect
 from .diff import report_diff
@@ -19,9 +20,11 @@ from .gateway import CredentialProvider, GatewayError, ModelGateway, build_gatew
 from .models import BenchmarkInput, EarningsInput, Period, ReportSpec, SectionInput, SourceName
 from .readiness import observe, record_observation
 from .repository import period_scopes
-from .sources import BankCatalog, Probe, Readiness, Scope, SourceIssue, opaque_id
+from .sources import BankCatalog, Passage, Probe, Readiness, Scope, SourceIssue, opaque_id
+from .topics import search_terms
 
 logger = logging.getLogger(__name__)
+MAX_ATTEMPTS = 3
 
 
 
@@ -32,6 +35,7 @@ class RequestScope:
     bank: str
     period: Period
     selector: SectionInput
+    instruction: str
 
     @property
     def source(self) -> SourceName:
@@ -41,14 +45,18 @@ class RequestScope:
     def topics(self) -> tuple[str, ...]:
         if isinstance(self.selector, EarningsInput):
             return tuple(self.selector.topics)
-        if not isinstance(self.selector, BenchmarkInput):
+        if not isinstance(self.selector, BenchmarkInput) and self.selector.topic:
             return (self.selector.topic,)
         return ()
+
+    @property
+    def terms(self) -> tuple[str, ...]:
+        return tuple(self.selector.terms) if not isinstance(self.selector, (BenchmarkInput, EarningsInput)) else ()
 
     def source_scope(self, bank) -> Scope:
         if isinstance(self.selector, BenchmarkInput):
             return Scope(bank, self.period, self.selector.metric, self.selector.segment)
-        return Scope(bank, self.period, topics=self.topics)
+        return Scope(bank, self.period, topics=self.topics, terms=self.terms)
 
     def describe(self) -> dict:
         return {
@@ -62,7 +70,7 @@ def requests_for(spec: ReportSpec, period: Period) -> list[RequestScope]:
     return [
         RequestScope(
             f"{section.id}:{index}:{offset}" if index else f"{section.id}:{offset}",
-            section.id, section.bank, target, selector,
+            section.id, section.bank, target, selector, section.instruction,
         )
         for section in spec.sections
         for offset, target in shifts[section.id].items()
@@ -85,6 +93,11 @@ class Worker:
     def _claim(self, now):
         with connect(self.settings.report_dsn) as conn:
             conn.execute("DELETE FROM rpt.runs WHERE mode = 'preview' AND expires_at <= %s", (now,))
+            conn.execute("""
+                UPDATE rpt.runs SET state = 'failed', error_code = 'attempts_exhausted',
+                                    lease_token = NULL, lease_until = NULL
+                WHERE state = 'running' AND lease_until <= %s AND attempt_count >= %s
+            """, (now, MAX_ATTEMPTS))
             return conn.execute("""
                 WITH next_run AS (
                     SELECT id FROM rpt.runs
@@ -93,7 +106,8 @@ class Worker:
                       AND (expires_at IS NULL OR expires_at > %s)
                     ORDER BY next_probe_at, created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED
                 )
-                UPDATE rpt.runs r SET state = 'running', lease_token = %s, lease_until = %s
+                UPDATE rpt.runs r SET state = 'running', lease_token = %s, lease_until = %s,
+                                      attempt_count = r.attempt_count + 1
                 FROM next_run WHERE r.id = next_run.id
                 RETURNING r.id, r.owner_key, r.mode, r.trigger_kind, r.report_id, r.period, r.spec,
                           r.baseline_id, r.preview_section_id, r.readiness, r.lease_token
@@ -145,10 +159,11 @@ class Worker:
         with connect(self.settings.report_dsn) as conn:
             conn.execute("""
                 UPDATE rpt.runs SET state = %s, result = %s, readiness = %s, error_code = %s, next_probe_at = %s,
-                                    lease_token = NULL, lease_until = NULL
+                                    lease_token = NULL, lease_until = NULL,
+                                    attempt_count = CASE WHEN %s = 'waiting' THEN 0 ELSE attempt_count END
                 WHERE id = %s AND lease_token = %s AND lease_until > %s
             """, (state, Jsonb(result) if result is not None else None, Jsonb(readiness), error_code, next_probe,
-                  job["id"], job["lease_token"], finished_at))
+                  state, job["id"], job["lease_token"], finished_at))
         return True
 
     def _active_owner(self, job):
@@ -176,10 +191,11 @@ class Worker:
         output["baseline_run_id"] = str(job["baseline_id"])
 
     def _vectors(self, requests, previous, automatic):
-        if automatic and not previous:
+        if (automatic and not previous) or not getattr(self.gateway, "supports_semantic_ranking", False):
             return {}
         topics = dict.fromkeys(
-            request.topics for request in requests if getattr(request.selector, "vector", False)
+            search_terms(request.topics, request.terms)
+            for request in requests if getattr(request.selector, "vector", False)
         )
         vectors = {}
         for selection in list(topics)[:6]:
@@ -242,12 +258,15 @@ class Worker:
                     continue
                 source, scope = query
                 use_vector = getattr(item.selector, "vector", False)
-                search_key = (query, use_vector)
+                search_key = (query, use_vector, item.instruction)
                 if search_key not in selected:
                     try:
-                        selected[search_key] = self.sources[source].search(
-                            source_conn, scope, vectors.get(item.topics) if use_vector else None,
+                        hits = self.sources[source].search(
+                            source_conn, scope, vectors.get(search_terms(item.topics, item.terms)) if use_vector else None,
                         )
+                        selected[search_key] = shortlist_passages(
+                            hits, item.instruction, semantic=use_vector and bool(vectors),
+                        ) if hits and isinstance(hits[0], Passage) else hits
                     except SourceIssue as issue:
                         selected[search_key] = issue
                 hits = selected[search_key]
@@ -258,7 +277,8 @@ class Worker:
                     if automatic and item.selector.required:
                         return readiness, None
                 else:
-                    evidence[item.section_id].extend(hits[:12])
+                    readiness[item.key]["evidence_state"] = "matched" if hits else "no_match"
+                    evidence[item.section_id].extend(hits)
             return readiness, evidence
 
 

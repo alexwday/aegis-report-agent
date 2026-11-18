@@ -89,9 +89,9 @@ SELECT 'synthetic/calls/' || version.number || '.xml',
 FROM seed_bank bank
 CROSS JOIN (VALUES ('Raw', '30'), ('Corrected', '2'), ('Corrected', '11')) AS version(kind, number)
 CROSS JOIN (VALUES
-    ('MANAGEMENT DISCUSSION SECTION', 1, NULL::integer, 1, '[Synthetic Speaker, CFO, Fixture Bank] Margins widened in the fixture.', 'Net Interest Income & Margins'),
-    ('Q&A', 2, 1, 1, '[Synthetic Analyst, Analyst, Fixture Research] What drove the change?', 'Funding costs'),
-    ('Q&A', 3, 1, 1, '[Synthetic Speaker, CFO, Fixture Bank] Fictional funding costs fell.', 'Funding costs')
+    ('MANAGEMENT DISCUSSION SECTION', 1, NULL::integer, 1, E'[Synthetic Speaker, CFO, Fixture Bank] Good morning and welcome to the call.\nI will now turn the call over to our analysts.\nThe net interest margin expanded 12 basis points as deposit costs eased.', 'Net Interest Income & Margins'),
+    ('Q&A', 2, 1, 1, '[Synthetic Analyst, Analyst, Fixture Research] Thank you for taking my question. What drove the change in funding costs?', 'Funding costs'),
+    ('Q&A', 3, 1, 1, E'[Synthetic Speaker, CFO, Fixture Bank] Thanks for the question.\nFictional funding costs fell.', 'Funding costs')
 ) AS chunk(section, block, qa, position, body, topic)
 JOIN seed_vector vectors ON vectors.id = 1
 WHERE bank.id = 901;
@@ -155,8 +155,8 @@ BEGIN
                    CASE WHEN $1 = 'financial-supp'
                         THEN E'| Row | A | B |\n|---|---|---:|\n| ' || (part + 1) ||
                              ' | Synthetic income line | ' || (120 + 13 * part) || ' |'
-                        WHEN $1 = 'earnings-transcripts' AND part = 1 THEN 'Synthetic net interest margins were steady.'
-                        WHEN $1 = 'earnings-transcripts' THEN 'Synthetic funding costs rose during the quarter.'
+                        WHEN $1 = 'earnings-transcripts' AND part = 1 THEN E'[Synthetic Executive, CFO, Fixture Bank] Good morning, everyone.\nSynthetic net interest margins were steady.'
+                        WHEN $1 = 'earnings-transcripts' THEN E'[Synthetic Executive, CFO, Fixture Bank] Thank you for joining the call.\nSynthetic funding costs rose during the quarter.'
                         WHEN $1 = 'investor-slides' THEN 'Synthetic funding costs fell in the sample presentation.'
                         ELSE 'Synthetic disclosure for fixture testing.'
                    END,
@@ -196,3 +196,28 @@ SELECT d.file_id || ':summary', 'section_summary', 'section', d.source_type, d.f
        vectors.embedding, 'text-embedding-3-large', 3072, d.created_at
 FROM public."aegis-investor-slides-data" d CROSS JOIN seed_vector vectors
 WHERE vectors.id = 2;
+
+
+-- Early mentions and later focused passages exercise text ranking independently of page order.
+INSERT INTO public."aegis-investor-slides-data"
+    (source_type, fiscal_year, quarter, bank, filename, file_id, file_type, file_path, file_hash,
+     page_number, name, chunk_id, chunk_content, created_at)
+SELECT d.source_type, d.fiscal_year, d.quarter, d.bank, d.filename, d.file_id, d.file_type, d.file_path, d.file_hash,
+       snippet.page, snippet.title, 'page_' || snippet.page || '.1', snippet.body, d.created_at
+FROM public."aegis-investor-slides-data" d
+CROSS JOIN (VALUES
+    (1, 'Forward-looking information', 'The net interest margin is one of several metrics that appear in this presentation. This notice explains the scope of forward-looking statements.'),
+    (19, 'Net interest margin and NIM drivers', 'The net interest margin increased 12 basis points. Higher net interest income came from stronger loan yields, and the net interest margin improved despite deposit competition.')
+) AS snippet(page, title, body)
+WHERE d.page_number = 3 AND d.bank = 'SYN1-CA';
+
+INSERT INTO public.rts_embedding
+    (created_at, chunk_id, page_no, bank, quarter, year, filename, raw_text, source_section, embedding)
+SELECT d.created_at, snippet.page, snippet.page, d.bank, d.quarter, d.year, d.filename, snippet.body,
+       snippet.title, d.embedding
+FROM public.rts_embedding d
+CROSS JOIN (VALUES
+    (2, 'About this report', 'The net interest margin appears in the glossary. This overview covers report conventions and the filing timetable.'),
+    (18, 'Net interest margin and net interest income', 'Net interest margin increased 10 basis points. The net interest margin benefited from asset yields, lifting net interest income.')
+) AS snippet(page, title, body)
+WHERE d.bank = 'SYN1-CA' AND d.page_no = 9;

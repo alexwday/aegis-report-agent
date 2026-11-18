@@ -55,6 +55,7 @@ class Scope:
     metric: str | None = None
     segment: str = "Enterprise"
     topics: tuple[str, ...] = ()
+    terms: tuple[str, ...] = ()
 
 
 ChangeBasis = Literal["basis_points", "percent_change", "unknown"]
@@ -82,6 +83,8 @@ class Passage(StrictModel):
     text: str
     topics: tuple[str, ...] = ()
     distance: float | None = None
+    speaker: str | None = None
+    relevance: float | None = None
     citation: Citation
 
 
@@ -137,6 +140,7 @@ class BankCatalog:
         matches = exact or [
             bank for bank in banks
             if folded in {alias.casefold() for alias in (bank.name, *bank.aliases)}
+            or folded == bank.symbol.rsplit("-", 1)[0].casefold()
         ]
         if len(matches) != 1:
             reason = "ambiguous_bank" if matches else "unknown_bank"
@@ -367,6 +371,7 @@ class EarningsSource:
                 bank=scope.bank.symbol, period=scope.period, generation="legacy",
                 edition=edition["transcript_type"], version=edition["version_id"], text=text,
                 topics=tuple(row["classification_names"] or ()), distance=row["distance"],
+                speaker=f"{edition['event_id']}:{row['speaker_block_id']}",
                 citation=Citation(id=opaque_id("legacy", scope.bank.symbol, edition["event_id"],
                                                edition["version_id"], edition["latest"], coordinates),
                                   source=SourceName.EARNINGS,

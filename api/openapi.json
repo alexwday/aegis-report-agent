@@ -248,6 +248,22 @@
             "title": "Offset",
             "type": "integer"
           },
+          "provenance": {
+            "anyOf": [
+              {
+                "enum": [
+                  "vendor_qoq",
+                  "vendor_yoy",
+                  "rounded_actuals"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provenance"
+          },
           "segment": {
             "anyOf": [
               {
@@ -458,11 +474,28 @@
             "title": "Source",
             "type": "string"
           },
+          "terms": {
+            "items": {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 8,
+            "title": "Terms",
+            "type": "array"
+          },
           "topic": {
-            "maxLength": 100,
-            "minLength": 1,
-            "title": "Topic",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Topic"
           },
           "vector": {
             "default": false,
@@ -471,8 +504,7 @@
           }
         },
         "required": [
-          "source",
-          "topic"
+          "source"
         ],
         "title": "DocumentInput",
         "type": "object"
@@ -700,6 +732,21 @@
             ],
             "title": "Data Stability",
             "type": "string"
+          },
+          "evidence_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "matched",
+                  "no_match"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence State"
           },
           "generation": {
             "anyOf": [

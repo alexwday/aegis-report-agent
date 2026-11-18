@@ -212,3 +212,27 @@ def test_internal_claim_gateway_passes_evidence_as_json_data():
         evidence = [{"id": "fixture", "topic": "Funding", "text": "Fixture funding costs fell.",
                      "source": "transcripts"}]
         assert provider.draft_claims("Funding", evidence)["claims"][0]["evidence_ids"] == ["fixture"]
+
+
+def test_candidate_window_is_bounded_diverse_and_ignores_operator_and_greetings():
+    from aegis_report.claims import candidates_for
+    from aegis_report.topics import TOPIC_TERMS
+
+    assert len(TOPIC_TERMS) == 23
+    period = Period(year=2090, quarter=3)
+    passages = [
+        Passage(
+            bank="SYN1-CA", period=period, topics=("Net Interest Income & Margins",),
+            text=(f"[Analyst {index}, Analyst, Fixture] Thanks for taking my question. "
+                  f"Net interest margin moved {index} basis points after the deposit mix changed."),
+            citation=Citation(id=f"block-{index:02}", source=SourceName.EARNINGS, locator="Fixture"),
+        )
+        for index in range(60)
+    ]
+    passages.insert(0, passages[0].model_copy(update={
+        "text": "[Operator, Operator, Fixture] Net interest margin moved 919 basis points in the imaginary script.",
+    }))
+    selected = candidates_for(passages, "Focus on the deposit mix and margin")
+    assert 40 <= len(selected) <= 50
+    assert len({item.speaker for item in selected}) >= 40
+    assert all("Thanks" not in item.text and "919" not in item.text for item in selected)

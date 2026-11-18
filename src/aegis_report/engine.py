@@ -56,11 +56,15 @@ def changes_for(rows: list[BenchmarkFact], quarter: Period, offset: int) -> list
     for primary in rows:
         baseline = priors.get(key(primary))
         if primary.period == quarter and baseline is not None:
-            value = compute_change(primary, baseline)
+            vendor = {-1: primary.raw_qoq, -4: primary.raw_yoy}.get(offset)
+            usable_vendor = primary.change_basis != "unknown" and vendor is not None and vendor.is_finite()
+            value = vendor if usable_vendor else compute_change(primary, baseline)
+            origin = {-1: "vendor_qoq", -4: "vendor_yoy"}[offset] if usable_vendor else "rounded_actuals"
             comparisons.append({
                 "value": str(value) if value is not None else None,
                 "basis": primary.change_basis, "metric": primary.metric, "segment": primary.segment,
                 "offset": offset, "citation_ids": [primary.citation.id, baseline.citation.id],
+                "provenance": origin if value is not None else None,
             })
     return comparisons
 
@@ -92,6 +96,10 @@ def render_html(result: dict) -> str:
         f"<p>{escape(str(Period.model_validate(result['period'])))} · Vendor fiscal labels</p>",
     ]
     for key, observation in result.get("readiness", {}).items():
+        if observation.get("evidence_state") == "no_match":
+            selector = observation.get("selector") or {}
+            focus = selector.get("topic") or ", ".join(selector.get("topics") or selector.get("terms") or [])
+            blocks.append(f"<p>No evidence matched {escape(focus or key)}.</p>")
         if observation.get("data_stability") != "stable" or observation["state"] != "ready":
             scope = " · ".join(str(value) for value in (
                 observation.get("bank"), observation.get("source"),
@@ -128,6 +136,10 @@ def render_html(result: dict) -> str:
         for change in section.get("comparisons") or [section["comparison"]]:
             if change:
                 label = f"{change['value']} {change['basis'].replace('_', ' ')}" if change["value"] else "Unavailable"
+                if change.get("provenance") == "rounded_actuals":
+                    label += " (calculated from rounded reported values)"
+                elif change.get("provenance") in ("vendor_qoq", "vendor_yoy"):
+                    label += " (vendor " + change["provenance"].removeprefix("vendor_").upper() + ")"
                 links = " ".join(citation_link(cite) for cite in change["citation_ids"])
                 metric = f"{escape(change['metric'])}: " if change.get("metric") else ""
                 blocks.append(

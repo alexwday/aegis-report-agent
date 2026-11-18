@@ -14,6 +14,7 @@ from .sources import (
     opaque_id,
     vector_literal,
 )
+from .topics import search_terms
 
 
 class SlideSource:
@@ -31,12 +32,15 @@ class SlideSource:
         return document_probe(rows, "unified")
 
     def search(self, conn: SourceConnection, scope: Scope, vector: list[float] | None = None) -> list[Passage]:
-        topic = scope.topics[0] if scope.topics else ""
+        terms = list(search_terms(scope.topics, scope.terms))
         query = vector_literal(vector)
         rows = conn.execute("""
-            WITH candidates AS (
+            WITH terms AS (
+                SELECT phraseto_tsquery('english', phrase) AS term FROM unnest(%s::text[]) AS phrases(phrase)
+            ), candidates AS (
                 SELECT d.file_path, d.file_hash, d.chunk_id, d.page_number, left(d.chunk_content, 16000) AS body,
-                       strpos(lower(concat_ws(' ', d.name, d.chunk_content, d.keywords::text)), lower(%s)) > 0 AS hit,
+                       setweight(to_tsvector('english', coalesce(d.name, '')), 'A') ||
+                       setweight(to_tsvector('english', d.chunk_content), 'D') AS lexemes,
                        CASE WHEN %s::text IS NOT NULL THEN (
                            SELECT min(e.embedding OPERATOR(public.<=>) %s::public.vector(3072))
                            FROM public."aegis-investor-slides-embeddings" e
@@ -48,16 +52,23 @@ class SlideSource:
                 FROM public."aegis-investor-slides-data" d
                 WHERE d.bank = %s AND d.fiscal_year = %s AND d.quarter = %s
                   AND d.page_number IS NOT NULL AND d.chunk_content <> ''
+            ), ranked AS (
+                SELECT file_path, file_hash, chunk_id, page_number, body, distance,
+                       coalesce((SELECT sum(ts_rank_cd(lexemes, term, 34)) FROM terms
+                                 WHERE lexemes @@ term), 0) AS rank
+                FROM candidates
             )
-            SELECT file_path, file_hash, chunk_id, page_number, body, distance FROM candidates
-            WHERE hit OR distance <= %s
-            ORDER BY hit DESC, distance NULLS LAST, file_path, page_number, chunk_id LIMIT 8
-        """, (topic, query, query, scope.bank.symbol, str(scope.period.year), f"Q{scope.period.quarter}",
-              self.threshold))
+            SELECT file_path, file_hash, chunk_id, page_number, body, distance, rank
+            FROM ranked
+            WHERE rank > 0 OR distance <= %s OR %s
+            ORDER BY rank + CASE WHEN distance IS NULL THEN 0 ELSE greatest(0, %s - distance) * 0.05 END DESC,
+                     rank DESC, distance NULLS LAST, file_path, page_number, chunk_id LIMIT 8
+        """, (terms, query, query, scope.bank.symbol, str(scope.period.year), f"Q{scope.period.quarter}",
+              self.threshold, not scope.topics and not scope.terms, self.threshold))
         return [
             Passage(
                 bank=scope.bank.symbol, period=scope.period, text=row["body"],
-                topics=scope.topics, distance=row["distance"],
+                topics=scope.topics or scope.terms[:1], distance=row["distance"], relevance=row["rank"],
                 citation=Citation(
                     source=SourceName.SLIDES,
                     id=opaque_id(SourceName.SLIDES, row["file_path"], row["file_hash"],
@@ -87,24 +98,34 @@ class RtsSource:
         return document_probe(rows, "legacy")
 
     def search(self, conn: SourceConnection, scope: Scope, vector: list[float] | None = None) -> list[Passage]:
-        topic = scope.topics[0] if scope.topics else ""
+        terms = list(search_terms(scope.topics, scope.terms))
         rows = conn.execute("""
-            WITH candidates AS (
+            WITH terms AS (
+                SELECT phraseto_tsquery('english', phrase) AS term FROM unnest(%s::text[]) AS phrases(phrase)
+            ), candidates AS (
                 SELECT filename, created_at, page_no, chunk_id, left(raw_text, 16000) AS body,
-                       strpos(lower(concat_ws(' ', source_section, raw_text)), lower(%s)) > 0 AS hit,
+                       setweight(to_tsvector('english', coalesce(source_section, '')), 'A') ||
+                       setweight(to_tsvector('english', raw_text), 'D') AS lexemes,
                        embedding OPERATOR(public.<=>) %s::public.halfvec(3072) AS distance
                 FROM public.rts_embedding
                 WHERE bank = %s AND year = %s AND quarter = %s AND page_no IS NOT NULL AND raw_text <> ''
+            ), ranked AS (
+                SELECT filename, created_at, page_no, chunk_id, body, distance,
+                       coalesce((SELECT sum(ts_rank_cd(lexemes, term, 34)) FROM terms
+                                 WHERE lexemes @@ term), 0) AS rank
+                FROM candidates
             )
-            SELECT filename, created_at, page_no, chunk_id, body, distance FROM candidates
-            WHERE hit OR distance <= %s
-            ORDER BY hit DESC, distance NULLS LAST, filename, page_no, chunk_id LIMIT 8
-        """, (topic, vector_literal(vector), scope.bank.symbol, scope.period.year, f"Q{scope.period.quarter}",
-              self.threshold))
+            SELECT filename, created_at, page_no, chunk_id, body, distance, rank
+            FROM ranked
+            WHERE rank > 0 OR distance <= %s OR %s
+            ORDER BY rank + CASE WHEN distance IS NULL THEN 0 ELSE greatest(0, %s - distance) * 0.05 END DESC,
+                     rank DESC, distance NULLS LAST, filename, page_no, chunk_id LIMIT 8
+        """, (terms, vector_literal(vector), scope.bank.symbol, scope.period.year, f"Q{scope.period.quarter}",
+              self.threshold, not scope.topics and not scope.terms, self.threshold))
         return [
             Passage(
                 bank=scope.bank.symbol, period=scope.period, text=row["body"],
-                topics=scope.topics, distance=row["distance"],
+                topics=scope.topics or scope.terms[:1], distance=row["distance"], relevance=row["rank"],
                 citation=Citation(
                     source=SourceName.RTS,
                     id=opaque_id(SourceName.RTS, row["filename"], row["created_at"], row["page_no"], row["chunk_id"]),

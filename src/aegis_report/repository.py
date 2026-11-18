@@ -183,6 +183,10 @@ class Reports:
             for row in section["rows"]:
                 if row["citation"]["id"] == evidence_id:
                     return row["citation"]
+            for claim in section.get("claims", []):
+                for citation in claim["citations"]:
+                    if citation["id"] == evidence_id:
+                        return citation
         raise HTTPException(404, "citation_not_found")
 
 
@@ -201,12 +205,6 @@ def template(bank: str) -> ReportSpec:
 
 def period_scopes(spec: ReportSpec, period: Period) -> dict[str, dict[int, Period]]:
     return {
-        section.id: {
-            offset: period.shifted(offset)
-            for offset in sorted({
-                *section.time.offsets,
-                *([section.time.compare_offset] if section.time.compare_offset is not None else []),
-            }, reverse=True)
-        }
+        section.id: {offset: period.shifted(offset) for offset in section.time.resolved_offsets()}
         for section in spec.sections
     }

@@ -20,6 +20,9 @@ class Settings:
     poll_seconds: float = 1
     retention_days: int = 7
     currencies: dict[str, str] = field(default_factory=lambda: {"CA": "CAD", "US": "USD"})
+    earnings_distance: float = 0.35
+    slides_distance: float = 0.35
+    rts_distance: float = 0.35
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -61,9 +64,15 @@ class Settings:
         local_user = os.environ.get("LOCAL_AUTH_USER_ID", "local-dev-user").strip()
         if local and not local_user:
             raise ValueError("LOCAL_AUTH_USER_ID is empty")
+        distances = [
+            float(os.environ.get(name, "0.35"))
+            for name in ("EARNINGS_COSINE_DISTANCE", "SLIDES_COSINE_DISTANCE", "RTS_COSINE_DISTANCE")
+        ]
+        if not all(0 <= distance <= 2 for distance in distances):
+            raise ValueError("Cosine distances must be between 0 and 2")
         return cls(
             report_dsn, source_dsn, secret, local, local_user, auth_url,
             llm_url, os.environ.get("INTERNAL_LLM_API_KEY"), model,
             os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large"),
-            quiet, poll, retention, currencies,
+            quiet, poll, retention, currencies, *distances,
         )

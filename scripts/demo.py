@@ -1,19 +1,40 @@
 import argparse
 import time
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import httpx
 
+from aegis_report.auth import LocalAuth
+from aegis_report.config import Settings
+from aegis_report.gateway import StubGateway
+from aegis_report.models import RunRequest
+from aegis_report.repository import Reports
+from aegis_report.worker import Worker
+
 Q2 = {"year": 2090, "quarter": 2}
 Q3 = {"year": 2090, "quarter": 3}
-EFFICIENCY = {
-    "id": "efficiency",
-    "title": "Efficiency ratio",
+TREND = {
+    "id": "net-income",
+    "title": "Net income trend",
     "bank": "SYN1-CA",
-    "sources": [{"source": "benchmarking", "metric": "Efficiency Ratio", "segment": "Enterprise"}],
-    "time": {"offsets": [0], "compare_offset": -1},
-    "instruction": "Highlight the cited ratio and show a change from the prior fiscal quarter.",
+    "sources": [{"source": "benchmarking", "metric": "Net Income", "segment": "Enterprise"}],
+    "time": {"preset": {"kind": "same_quarter_years", "count": 4}, "compare": "prior_year"},
+    "instruction": "Highlight the cited figure and its year-over-year change.",
     "output_format": "table_with_note",
+}
+THEMES = {
+    "id": "earnings-themes",
+    "kind": "themes",
+    "title": "Earnings themes and funding context",
+    "bank": "SYN1-CA",
+    "sources": [
+        {"source": "transcripts", "topics": ["Funding costs"]},
+        {"source": "benchmarking", "metric": "Efficiency Ratio"},
+        {"source": "investor_presentation", "topic": "Funding costs", "required": False},
+    ],
+    "instruction": "Identify cited funding-cost claims and include the benchmark context.",
+    "output_format": "themes",
 }
 
 
@@ -31,72 +52,123 @@ def wait_for_run(client, run_id):
             return
         if run["state"] == "failed":
             raise RuntimeError(f"Worker failed: {run['error_code']}")
-        time.sleep(0.15)
+        time.sleep(0.1)
     raise RuntimeError("Worker did not finish within the demo window")
 
 
 def demonstrate(client, wait=wait_for_run, show=print):
-    run_prefix = uuid4().hex
+    prefix = uuid4().hex
     draft = submit(client, "POST", "/v1/drafts", {"template": "quarterly-earnings", "bank": "SYN1-CA"})
     drafts = f"/v1/drafts/{draft['id']}"
     show("Draft created from the quarterly earnings template.")
 
-    saved = submit(client, "POST", f"{drafts}/save", {"revision": draft["revision"]})
+    initial_theme = THEMES | {
+        "sources": [{"source": "transcripts", "topics": ["Net Interest Income & Margins"]}, THEMES["sources"][1]],
+    }
+    initial = submit(client, "PATCH", drafts, {"revision": draft["revision"], "op": "add_section", "section": initial_theme})
+    saved = submit(client, "POST", f"{drafts}/save", {"revision": initial["revision"]})
     reports = f"/v1/reports/{saved['report_id']}"
     baseline = submit(client, "POST", f"{reports}/runs", {
-        "version": 1, "period": Q2, "request_key": f"{run_prefix}-baseline",
+        "version": 1, "period": Q2, "request_key": f"{prefix}-baseline",
     })
     wait(client, baseline["id"])
-    show("Saved baseline v1 generated for FY2090 Q2.")
+    show("Saved baseline v1 generated on demand for FY2090 Q2.")
 
-    patched = submit(client, "PATCH", drafts, {
-        "revision": saved["draft_revision"], "op": "add_section", "section": EFFICIENCY,
+    revised = submit(client, "PATCH", drafts, {
+        "revision": saved["draft_revision"], "op": "replace_section", "section": TREND,
+    })
+    revised = submit(client, "PATCH", drafts, {
+        "revision": revised["revision"], "op": "replace_section", "section": THEMES,
     })
     stage_list = submit(client, "GET", f"{drafts}/stages")
-    kinds = [stage["kind"] for stage in stage_list[1]["stages"]]
+    kinds = [stage["kind"] for stage in stage_list[0]["stages"]]
     assert kinds == ["retrieve", "calculate", "draft", "numeric_check", "format"]
-    show("Efficiency section compiled: " + " → ".join(kinds))
 
     preview = submit(client, "POST", f"{drafts}/previews", {
-        "revision": patched["revision"], "period": Q2, "baseline_run_id": baseline["id"], "section_id": "efficiency",
+        "revision": revised["revision"], "period": Q2, "baseline_run_id": baseline["id"],
     })
     wait(client, preview["id"])
     preview_result = submit(client, "GET", f"/v1/runs/{preview['id']}/output.json")
-    diff = preview_result["diff"]
-    assert diff == {"added": ["efficiency"], "removed": [], "changed": []}
+    detail = preview_result["diff_details"]
+    periods = detail["after_periods"]["net-income"]
+    assert [item["year"] for item in periods] == [2090, 2089, 2088, 2087]
+    assert all(item["quarter"] == 2 for item in periods)
+    assert len(preview_result["sections"][0]["rows"]) == 4
+    assert preview_result["sections"][1]["claims"][0]["evidence_ids"]
+    assert any(item["state"] == "absent" and not item["required"] for item in preview_result["readiness"].values())
     unchanged = submit(client, "GET", f"{reports}/versions/1")
-    assert [section["id"] for section in unchanged["sections"]] == ["net-income"]
-    show("Preview diff against v1 (FY2090 Q2): added efficiency. Saved v1 retains its original section.")
+    assert unchanged["sections"][0]["time"]["preset"] is None
 
-    v2 = submit(client, "POST", f"{drafts}/save", {"revision": patched["revision"]})
+    show("Preview completed against current data without waiting for the quiet period.")
+    show("Resolved same-quarter trend: " + ", ".join(f"FY{item['year']} Q{item['quarter']}" for item in periods))
+    for item in detail["entries"]:
+        if item["entity"] == "row" and item["operation"] == "added":
+            show(f"  Added trend row: {item['key']} = {item['after']['actual']}")
+        if item["entity"] == "claim":
+            old = item["before"]["text"] if item["before"] else ""
+            new = item["after"]["text"] if item["after"] else ""
+            show(f"  {item['operation'].capitalize()} claim: {old or new}")
+
+    v2 = submit(client, "POST", f"{drafts}/save", {"revision": revised["revision"]})
     assert v2["version"] == 2
-    next_run = submit(client, "POST", f"{reports}/runs", {
-        "version": v2["version"], "period": Q3, "request_key": f"{run_prefix}-next-quarter",
-    })
-    wait(client, next_run["id"])
-    run_path = f"/v1/runs/{next_run['id']}"
-    result = submit(client, "GET", f"{run_path}/output.json")
+    run_path = f"/v1/runs/{preview['id']}"
     html = client.get(f"{run_path}/output.html")
     html.raise_for_status()
-    efficiency = result["sections"][1]
-    citation = efficiency["rows"][0]["citation"]
-    evidence = submit(client, "GET", f"{run_path}/evidence/{citation['id']}")
-    assert evidence == citation and f'#e-{citation["id"]}' in html.text
-    assert result["period"] == Q3 and efficiency["comparison"]["basis"] == "basis_points"
-    assert efficiency["comparison"]["value"] == "-40.0"
-    show("Saved v2 generated for FY2090 Q3 by the worker with the stub LLM.")
-    show(f"HTML and JSON have {len(result['sections'])} sections with citations.")
-    show(f"Efficiency change: {efficiency['comparison']['value']} basis points.")
-    show(f"Citation: {citation['locator']}")
-    return {"draft": draft, "saved": v2, "baseline": baseline, "preview": preview, "run": next_run, "result": result}
+    for section in preview_result["sections"]:
+        for claim in section["claims"]:
+            for citation in claim["citations"]:
+                evidence = submit(client, "GET", f"{run_path}/evidence/{citation['id']}")
+                assert evidence == citation and f'#e-{citation["id"]}' in html.text
+    show("Saved v2; preview HTML and JSON carry linked citations.")
+    return {"draft": draft, "saved": v2, "baseline": baseline, "preview": preview, "run": preview, "result": preview_result}
+
+
+def demonstrate_automatic(client, settings: Settings, saved: dict, show=print):
+    if not settings.local or "host=/tmp/aegis-g1." not in settings.report_dsn:
+        raise ValueError("The injected-clock demo requires the disposable local fixture")
+    owner = LocalAuth(settings.local_user_id).authenticate(None).owner_key(settings.owner_secret)
+    # Schedule the fixture job in the future so the wall-clock worker cannot claim it.
+    simulated = datetime.now(UTC) + timedelta(hours=1)
+    worker = Worker(settings, StubGateway(), clock=lambda: simulated)
+    request = RunRequest.model_validate({
+        "version": saved["version"], "period": Q3, "request_key": f"{uuid4().hex}-automatic",
+    })
+    run = Reports(settings.report_dsn, settings.retention_days).enqueue_automatic(
+        owner, saved["report_id"], request, simulated,
+    )
+    path = f"/v1/runs/{run['id']}"
+    assert worker.run_one()
+    assert submit(client, "GET", path)["state"] == "waiting"
+    show(f"Automatic FY2090 Q3 run is waiting after its first probe ({settings.quiet_seconds:g} s quiet period).")
+    simulated += timedelta(seconds=max(settings.quiet_seconds, settings.poll_seconds))
+    assert worker.run_one()
+    assert submit(client, "GET", path)["state"] == "succeeded"
+    result = submit(client, "GET", f"{path}/output.json")
+    assert result["period"] == Q3
+    assert all(item["data_stability"] == "stable" for item in result["readiness"].values() if item["required"])
+    assert len(result["sections"][0]["rows"]) == 4
+    claims = result["sections"][1]["claims"]
+    assert {claim["citations"][0]["source"] for claim in claims} >= {"transcripts", "investor_presentation"}
+    html = client.get(f"{path}/output.html")
+    html.raise_for_status()
+    assert all(f'#e-{id_}' in html.text for claim in claims for id_ in claim["evidence_ids"])
+    show("After advancing the injected clock, the automatic run rendered cited HTML and JSON for saved v2.")
+    show("  FY2090 Q3 themes: " + " | ".join(claim["text"] for claim in claims))
+    return result
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("base_url", nargs="?", default="http://127.0.0.1:8000")
+    parser.add_argument("--automatic-fixture", action="store_true")
     args = parser.parse_args()
     with httpx.Client(base_url=args.base_url, timeout=10, trust_env=False) as client:
-        demonstrate(client)
+        settings = Settings.from_env() if args.automatic_fixture else None
+        if settings:
+            print(f"Worker quiet period: {settings.quiet_seconds:g} s.")
+        delivery = demonstrate(client)
+        if settings:
+            demonstrate_automatic(client, settings, delivery["saved"])
 
 
 if __name__ == "__main__":

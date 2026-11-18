@@ -42,28 +42,74 @@ class BenchmarkInput(StrictModel):
     source: Literal["benchmarking"] = "benchmarking"
     metric: Label
     segment: Label = "Enterprise"
+    required: bool = True
+
+
+class EarningsInput(StrictModel):
+    source: Literal["transcripts"]
+    topics: list[Label] = Field(min_length=1, max_length=4)
+    vector: bool = False
+    required: bool = True
+
+
+class DocumentInput(StrictModel):
+    source: Literal["investor_presentation", "rts"]
+    topic: Label
+    vector: bool = False
+    required: bool = True
+
+
+SectionInput = BenchmarkInput | EarningsInput | DocumentInput
+
+
+class PeriodPreset(StrictModel):
+    kind: Literal["trailing_quarters", "same_quarter_years", "quarter_sequence", "year_sequence"]
+    count: int = Field(ge=1, le=12)
+
+    def offsets(self) -> list[int]:
+        step = 4 if self.kind in ("same_quarter_years", "year_sequence") else 1
+        offsets = [-index * step for index in range(self.count)]
+        return offsets[::-1] if self.kind in ("quarter_sequence", "year_sequence") else offsets
 
 
 class TimeScope(StrictModel):
-    offsets: list[Offset] = Field(default_factory=lambda: [0], min_length=1, max_length=5)
+    offsets: list[Offset] | None = Field(default=None, min_length=1, max_length=12)
     compare_offset: Annotated[int, Field(ge=-20, le=-1)] | None = None
+    preset: PeriodPreset | None = None
+    compare: Literal["prior_quarter", "prior_year"] | None = None
     basis: Literal["vendor_fiscal_label"] = "vendor_fiscal_label"
 
     @model_validator(mode="after")
     def check_offsets(self) -> "TimeScope":
-        if 0 not in self.offsets or len(self.offsets) != len(set(self.offsets)):
-            raise ValueError("offsets must be unique and include the run quarter (0)")
+        if self.offsets is not None:
+            if self.preset is not None or 0 not in self.offsets or len(self.offsets) != len(set(self.offsets)):
+                raise ValueError("Explicit offsets must be unique, include zero, and have no preset")
+        if self.preset is not None and min(self.preset.offsets()) < -20:
+            raise ValueError("A preset cannot extend beyond 20 prior fiscal quarters")
+        if self.compare is not None and self.compare_offset is not None:
+            raise ValueError("Choose a named comparison or an explicit comparison offset")
+        if len(self.resolved_offsets()) > 12:
+            raise ValueError("A section may resolve at most 12 fiscal periods including comparison")
         return self
+
+    def comparison_offset(self) -> int | None:
+        return {"prior_quarter": -1, "prior_year": -4}.get(self.compare, self.compare_offset)
+
+    def resolved_offsets(self) -> list[int]:
+        offsets = self.preset.offsets() if self.preset else sorted(self.offsets or [0], reverse=True)
+        compare = self.comparison_offset()
+        return [*offsets, compare] if compare is not None and compare not in offsets else offsets
 
 
 class SectionSpec(StrictModel):
     id: SectionId
     title: Label
     bank: Symbol
-    sources: list[BenchmarkInput] = Field(min_length=1, max_length=1)
+    sources: list[SectionInput] = Field(min_length=1, max_length=4)
+    kind: Literal["benchmark", "themes"] = "benchmark"
     time: TimeScope = Field(default_factory=TimeScope)
     instruction: Instruction
-    output_format: Literal["table", "table_with_note"] = "table_with_note"
+    output_format: Literal["table", "table_with_note", "themes"] = "table_with_note"
 
     @model_validator(mode="before")
     @classmethod
@@ -71,6 +117,30 @@ class SectionSpec(StrictModel):
         if isinstance(value, dict) and "stages" in value:
             raise ValueError("Custom stage kinds are unsupported. Stages are generated from the section object.")
         return value
+
+    @model_validator(mode="after")
+    def check_sources(self) -> "SectionSpec":
+        if self.kind == "themes":
+            if not any(isinstance(item, EarningsInput) for item in self.sources):
+                raise ValueError("Themes require at least one earnings transcript source")
+            if self.output_format != "themes":
+                raise ValueError("Themes sections use the themes output format")
+        elif self.output_format == "themes" or not all(isinstance(item, BenchmarkInput) for item in self.sources):
+            raise ValueError("Benchmark sections use benchmark sources and a table output format")
+        identities = [source_identity(item) for item in self.sources]
+        if len(set(identities)) != len(identities):
+            raise ValueError("Source selections in a section must be distinct")
+        if len(self.sources) * len(self.time.resolved_offsets()) > 24:
+            raise ValueError("A section may resolve at most 24 source-period scopes")
+        return self
+
+
+def source_identity(item: SectionInput) -> tuple[str, ...]:
+    if isinstance(item, BenchmarkInput):
+        return (item.source, item.metric, item.segment)
+    if isinstance(item, EarningsInput):
+        return (item.source, *sorted({topic.casefold() for topic in item.topics}))
+    return (item.source, item.topic.casefold())
 
 
 class ReportSpec(StrictModel):
@@ -100,9 +170,9 @@ class Stage(StrictModel):
 
 def compile_section(section: SectionSpec) -> list[Stage]:
     kinds = [StageKind.RETRIEVE]
-    if section.time.compare_offset is not None:
+    if section.time.comparison_offset() is not None and any(isinstance(item, BenchmarkInput) for item in section.sources):
         kinds.append(StageKind.CALCULATE)
-    if section.output_format == "table_with_note":
+    if section.output_format != "table":
         kinds.append(StageKind.DRAFT)
     return [Stage(kind=kind) for kind in (*kinds, StageKind.NUMERIC_CHECK, StageKind.FORMAT)]
 

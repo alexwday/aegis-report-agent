@@ -12,8 +12,11 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import Field
 
 from .auth import AuthProvider, CurrentUser, LocalAuth, UpstreamAuth
+from .claims import ThemeClaim
 from .config import Settings
 from .db import connect
+from .diff import DiffDetails
+from .documents import build_sources
 from .engine import render_html
 from .models import (
     DraftCreate,
@@ -39,7 +42,6 @@ from .sources import (
     Readiness,
     Scope,
     SourceIssue,
-    build_sources,
 )
 
 bearer = HTTPBearer(auto_error=False)
@@ -89,6 +91,7 @@ class Observation(Probe):
     period: Period | None = None
     bank: str | None = None
     required: bool = True
+    selector: dict | None = None
 
 
 class RunResponse(StrictModel):
@@ -109,6 +112,8 @@ class Comparison(StrictModel):
     basis: ChangeBasis
     offset: int
     citation_ids: list[str]
+    metric: str | None = None
+    segment: str | None = None
 
 
 class Note(StrictModel):
@@ -117,11 +122,14 @@ class Note(StrictModel):
 
 
 class SectionResult(StrictModel):
+    resolved_periods: list[Period] = Field(default_factory=list)
     id: str
     title: str
     rows: list[BenchmarkFact]
     note: Note | None
     comparison: Comparison | None
+    comparisons: list[Comparison] = Field(default_factory=list)
+    claims: list[ThemeClaim] = Field(default_factory=list)
 
 
 class ReportDiff(StrictModel):
@@ -136,6 +144,7 @@ class Result(StrictModel):
     basis: Literal["vendor_fiscal_label"]
     sections: list[SectionResult]
     diff: ReportDiff | None = None
+    diff_details: DiffDetails | None = None
     baseline_run_id: UUID | None = None
     readiness: dict[str, Observation] = Field(default_factory=dict)
 
@@ -173,7 +182,7 @@ def create_app(settings: Settings | None = None, auth_provider: AuthProvider | N
             application.state.settings = active
             application.state.reports = Reports(active.report_dsn, active.retention_days)
             application.state.catalog = BankCatalog()
-            application.state.sources = build_sources(active.currencies)
+            application.state.sources = build_sources(active)
             if auth_provider:
                 application.state.auth = auth_provider
             elif active.local:

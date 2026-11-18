@@ -59,6 +59,16 @@ VALUES
     ('SYN3', 'SYN3-US', 'Efficiency Ratio', 'Capital Markets', 2090, 'Q3', 47.77, -34, '%', 'synthetic/benchmarking.csv'),
     ('SYN1', 'SYN1-CA', 'Net Income', 'Enterprise', 2088, 'Q3', 400, NULL, 'fixture invalid unit', 'synthetic/benchmarking.csv');
 
+-- Same-quarter comparison fixtures. The 2088 Q3 value is explicit above.
+INSERT INTO public.benchmarking_report
+    (bank, bank_symbol, "Parameter", "Platform", fiscal_year, quarter, "Actual", updated_at, filepath)
+SELECT 'SYN1', 'SYN1-CA', 'Net Income', 'Enterprise', year_number, quarter_label,
+       380 + (year_number - 2087) * 15 + CASE WHEN quarter_label = 'Q3' THEN 5 ELSE 0 END,
+       timestamp '2090-10-01 00:00:00', 'synthetic/benchmarking.csv'
+FROM generate_series(2087, 2089) AS history(year_number)
+CROSS JOIN (VALUES ('Q2'), ('Q3')) AS quarters(quarter_label)
+WHERE (year_number, quarter_label) <> (2088, 'Q3');
+
 -- Real identifiers are excluded; the synthetic relative paths exercise the documented naming pattern.
 
 
@@ -74,15 +84,15 @@ SELECT 'synthetic/calls/' || version.number || '.xml',
        'Canadian_Banks', bank.id::text, bank.symbol, bank.name, 2090, 'Q3',
        chunk.section, chunk.block, chunk.qa, chunk.position, 24, ARRAY['p-' || chunk.position],
        chunk.body, 'Fictional discussion for adapter tests.', ARRAY['fixture-margin'],
-       ARRAY['Net Interest Income & Margins'], vectors.embedding,
+       ARRAY[chunk.topic], vectors.embedding,
        timestamptz '2090-08-10 00:00:00+00', timestamptz '2090-08-10 00:00:00+00'
 FROM seed_bank bank
 CROSS JOIN (VALUES ('Raw', '30'), ('Corrected', '2'), ('Corrected', '11')) AS version(kind, number)
 CROSS JOIN (VALUES
-    ('MANAGEMENT DISCUSSION SECTION', 1, NULL::integer, 1, '[Synthetic Speaker, CFO, Fixture Bank] Margins widened in the fixture.'),
-    ('Q&A', 2, 1, 1, '[Synthetic Analyst, Analyst, Fixture Research] What drove the change?'),
-    ('Q&A', 3, 1, 1, '[Synthetic Speaker, CFO, Fixture Bank] Fictional funding costs fell.')
-) AS chunk(section, block, qa, position, body)
+    ('MANAGEMENT DISCUSSION SECTION', 1, NULL::integer, 1, '[Synthetic Speaker, CFO, Fixture Bank] Margins widened in the fixture.', 'Net Interest Income & Margins'),
+    ('Q&A', 2, 1, 1, '[Synthetic Analyst, Analyst, Fixture Research] What drove the change?', 'Funding costs'),
+    ('Q&A', 3, 1, 1, '[Synthetic Speaker, CFO, Fixture Bank] Fictional funding costs fell.', 'Funding costs')
+) AS chunk(section, block, qa, position, body, topic)
 JOIN seed_vector vectors ON vectors.id = 1
 WHERE bank.id = 901;
 
@@ -138,16 +148,22 @@ BEGIN
             SELECT $1, $2, '2090', $3,
                    CASE WHEN $1 = 'earnings-transcripts' THEN 'SYN1-CA_Q2_2090_Corrected_990_1.xml'
                         ELSE $1 || '-fixture.' || $4 END,
-                   $1 || '-fixture', $4,
+                   $1 || '_2090_' || $3 || '_' || $2, $4,
                    'synthetic/' || $1 || '-fixture.' || $4, md5($1 || '-fixture'), CASE WHEN $1 = 'earnings-transcripts' THEN 3 - part ELSE $5 END, $6,
                    CASE WHEN $1 = 'financial-supp' THEN 'sheet_' ELSE 'page_' END || $5 || '.' || part,
                    'Fabricated evidence, part ' || part,
                    CASE WHEN $1 = 'financial-supp'
                         THEN E'| Row | A | B |\n|---|---|---:|\n| ' || (part + 1) ||
                              ' | Synthetic income line | ' || (120 + 13 * part) || ' |'
+                        WHEN $1 = 'earnings-transcripts' AND part = 1 THEN 'Synthetic net interest margins were steady.'
+                        WHEN $1 = 'earnings-transcripts' THEN 'Synthetic funding costs rose during the quarter.'
+                        WHEN $1 = 'investor-slides' THEN 'Synthetic funding costs fell in the sample presentation.'
                         ELSE 'Synthetic disclosure for fixture testing.'
                    END,
-                   '["fixture", "capital"]'::jsonb, '["Net Interest Income", "CET1 Ratio"]'::jsonb,
+                   CASE WHEN $1 = 'earnings-transcripts' AND part = 1 THEN '["Net Interest Income & Margins"]'::jsonb
+                        WHEN $1 = 'earnings-transcripts' THEN '["Funding costs"]'::jsonb
+                        ELSE '["fixture", "capital"]'::jsonb END,
+                   '["Net Interest Income", "CET1 Ratio"]'::jsonb,
                    timestamptz '2090-08-10 00:00:00+00'
             FROM generate_series(1, $7) AS parts(part)
         $data$, 'aegis-' || source.kind || '-data')

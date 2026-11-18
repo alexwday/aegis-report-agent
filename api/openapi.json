@@ -166,6 +166,11 @@
             "title": "Metric",
             "type": "string"
           },
+          "required": {
+            "default": true,
+            "title": "Required",
+            "type": "boolean"
+          },
           "segment": {
             "default": "Enterprise",
             "maxLength": 100,
@@ -228,9 +233,31 @@
             "title": "Citation Ids",
             "type": "array"
           },
+          "metric": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metric"
+          },
           "offset": {
             "title": "Offset",
             "type": "integer"
+          },
+          "segment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Segment"
           },
           "value": {
             "anyOf": [
@@ -273,6 +300,181 @@
           "stages"
         ],
         "title": "CompiledSection",
+        "type": "object"
+      },
+      "DetailChange": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After"
+          },
+          "after_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Index"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before"
+          },
+          "before_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before Index"
+          },
+          "entity": {
+            "enum": [
+              "section",
+              "row",
+              "claim",
+              "note"
+            ],
+            "title": "Entity",
+            "type": "string"
+          },
+          "fields": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/FieldChange"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fields"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "operation": {
+            "enum": [
+              "added",
+              "removed",
+              "moved",
+              "changed"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "section_id": {
+            "title": "Section Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity",
+          "section_id",
+          "key",
+          "operation"
+        ],
+        "title": "DetailChange",
+        "type": "object"
+      },
+      "DiffDetails": {
+        "additionalProperties": false,
+        "properties": {
+          "after_periods": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/Period"
+              },
+              "type": "array"
+            },
+            "title": "After Periods",
+            "type": "object"
+          },
+          "before_periods": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/Period"
+              },
+              "type": "array"
+            },
+            "title": "Before Periods",
+            "type": "object"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/DetailChange"
+            },
+            "title": "Entries",
+            "type": "array"
+          }
+        },
+        "required": [
+          "before_periods",
+          "after_periods",
+          "entries"
+        ],
+        "title": "DiffDetails",
+        "type": "object"
+      },
+      "DocumentInput": {
+        "additionalProperties": false,
+        "properties": {
+          "required": {
+            "default": true,
+            "title": "Required",
+            "type": "boolean"
+          },
+          "source": {
+            "enum": [
+              "investor_presentation",
+              "rts"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "topic": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Topic",
+            "type": "string"
+          },
+          "vector": {
+            "default": false,
+            "title": "Vector",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "source",
+          "topic"
+        ],
+        "title": "DocumentInput",
         "type": "object"
       },
       "DraftCreate": {
@@ -389,6 +591,60 @@
         "title": "DraftResponse",
         "type": "object"
       },
+      "EarningsInput": {
+        "additionalProperties": false,
+        "properties": {
+          "required": {
+            "default": true,
+            "title": "Required",
+            "type": "boolean"
+          },
+          "source": {
+            "const": "transcripts",
+            "title": "Source",
+            "type": "string"
+          },
+          "topics": {
+            "items": {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 4,
+            "minItems": 1,
+            "title": "Topics",
+            "type": "array"
+          },
+          "vector": {
+            "default": false,
+            "title": "Vector",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "source",
+          "topics"
+        ],
+        "title": "EarningsInput",
+        "type": "object"
+      },
+      "FieldChange": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "title": "After"
+          },
+          "before": {
+            "title": "Before"
+          }
+        },
+        "required": [
+          "before",
+          "after"
+        ],
+        "title": "FieldChange",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -498,6 +754,18 @@
             "title": "Required",
             "type": "boolean"
           },
+          "selector": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selector"
+          },
           "since": {
             "anyOf": [
               {
@@ -557,6 +825,33 @@
           "quarter"
         ],
         "title": "Period",
+        "type": "object"
+      },
+      "PeriodPreset": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "maximum": 12.0,
+            "minimum": 1.0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "trailing_quarters",
+              "same_quarter_years",
+              "quarter_sequence",
+              "year_sequence"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "count"
+        ],
+        "title": "PeriodPreset",
         "type": "object"
       },
       "PreviewRequest": {
@@ -701,6 +996,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/ReportDiff"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "diff_details": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DiffDetails"
               },
               {
                 "type": "null"
@@ -913,6 +1218,13 @@
       "SectionResult": {
         "additionalProperties": false,
         "properties": {
+          "claims": {
+            "items": {
+              "$ref": "#/components/schemas/ThemeClaim"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
           "comparison": {
             "anyOf": [
               {
@@ -922,6 +1234,13 @@
                 "type": "null"
               }
             ]
+          },
+          "comparisons": {
+            "items": {
+              "$ref": "#/components/schemas/Comparison"
+            },
+            "title": "Comparisons",
+            "type": "array"
           },
           "id": {
             "title": "Id",
@@ -936,6 +1255,13 @@
                 "type": "null"
               }
             ]
+          },
+          "resolved_periods": {
+            "items": {
+              "$ref": "#/components/schemas/Period"
+            },
+            "title": "Resolved Periods",
+            "type": "array"
           },
           "rows": {
             "items": {
@@ -979,20 +1305,40 @@
             "title": "Instruction",
             "type": "string"
           },
+          "kind": {
+            "default": "benchmark",
+            "enum": [
+              "benchmark",
+              "themes"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
           "output_format": {
             "default": "table_with_note",
             "enum": [
               "table",
-              "table_with_note"
+              "table_with_note",
+              "themes"
             ],
             "title": "Output Format",
             "type": "string"
           },
           "sources": {
             "items": {
-              "$ref": "#/components/schemas/BenchmarkInput"
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/BenchmarkInput"
+                },
+                {
+                  "$ref": "#/components/schemas/EarningsInput"
+                },
+                {
+                  "$ref": "#/components/schemas/DocumentInput"
+                }
+              ]
             },
-            "maxItems": 1,
+            "maxItems": 4,
             "minItems": 1,
             "title": "Sources",
             "type": "array"
@@ -1182,6 +1528,51 @@
         "title": "TemplateResponse",
         "type": "object"
       },
+      "ThemeClaim": {
+        "additionalProperties": false,
+        "properties": {
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/Citation"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "topic": {
+            "title": "Topic",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "topic",
+          "text",
+          "evidence_ids",
+          "citations",
+          "method"
+        ],
+        "title": "ThemeClaim",
+        "type": "object"
+      },
       "TimeScope": {
         "additionalProperties": false,
         "properties": {
@@ -1190,6 +1581,21 @@
             "default": "vendor_fiscal_label",
             "title": "Basis",
             "type": "string"
+          },
+          "compare": {
+            "anyOf": [
+              {
+                "enum": [
+                  "prior_quarter",
+                  "prior_year"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compare"
           },
           "compare_offset": {
             "anyOf": [
@@ -1205,15 +1611,32 @@
             "title": "Compare Offset"
           },
           "offsets": {
-            "items": {
-              "maximum": 0.0,
-              "minimum": -20.0,
-              "type": "integer"
-            },
-            "maxItems": 5,
-            "minItems": 1,
-            "title": "Offsets",
-            "type": "array"
+            "anyOf": [
+              {
+                "items": {
+                  "maximum": 0.0,
+                  "minimum": -20.0,
+                  "type": "integer"
+                },
+                "maxItems": 12,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offsets"
+          },
+          "preset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PeriodPreset"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "title": "TimeScope",

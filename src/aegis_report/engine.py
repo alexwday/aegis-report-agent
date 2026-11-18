@@ -1,66 +1,84 @@
 from html import escape
 
+from .claims import draft_themes
 from .gateway import GatewayError, ModelGateway
-from .models import Period, ReportSpec, StageKind, compile_section
-from .sources import BenchmarkFact, compute_change
+from .models import Period, ReportSpec, SectionSpec, StageKind, compile_section
+from .sources import BenchmarkFact, Passage, compute_change
 
 
 def generate_report(
-    spec: ReportSpec, quarter: Period, facts: dict[str, dict[int, BenchmarkFact]], gateway: ModelGateway
+    spec: ReportSpec, quarter: Period, evidence: dict[str, list[BenchmarkFact | Passage]], gateway: ModelGateway
 ) -> dict:
-    output = {"title": spec.title, "period": quarter.model_dump(), "basis": "vendor_fiscal_label", "sections": []}
-    for section in spec.sections:
-        observations = facts[section.id]
-        stages = compile_section(section)
-        rows = [observations[offset] for offset in sorted(observations, reverse=True)]
-        primary = observations.get(0)
-        change, note = None, None
-        for stage in stages:
-            if stage.kind is StageKind.CALCULATE:
-                baseline = observations.get(section.time.compare_offset)
-                if primary is None or baseline is None:
-                    continue
-                value = compute_change(primary, baseline)
-                change = {
-                    "value": str(value) if value is not None else None,
-                    "basis": primary.change_basis,
-                    "offset": section.time.compare_offset,
-                    "citation_ids": [primary.citation.id, baseline.citation.id],
-                }
-            if stage.kind is StageKind.DRAFT:
-                choice = gateway.choose_observation(section.instruction, [row.citation.id for row in rows])
-                if choice is not None:
-                    cited = next((row for row in rows if row.citation.id == choice), None)
-                    if cited is None:
-                        raise GatewayError("invalid_model_output")
-                    note = {"citation_id": choice, "text": f"{cited.metric} for {cited.period}: {display_value(cited)}."}
-            if stage.kind is StageKind.NUMERIC_CHECK:
-                if any(row.actual is None or not row.actual.is_finite() or not row.citation.id for row in rows):
-                    raise GatewayError("invalid_numeric_evidence")
-        output["sections"].append({
-            "id": section.id,
-            "title": section.title,
-            "rows": [row.model_dump(mode="json") for row in rows],
-            "note": note,
-            "comparison": change,
-        })
-    return output
+    return {
+        "title": spec.title,
+        "period": quarter.model_dump(),
+        "basis": "vendor_fiscal_label",
+        "sections": [generate_section(section, quarter, evidence[section.id], gateway) for section in spec.sections],
+    }
+
+
+def generate_section(section: SectionSpec, quarter: Period, evidence: list[BenchmarkFact | Passage], gateway) -> dict:
+    rows = [item for item in evidence if isinstance(item, BenchmarkFact)]
+    passages = [item for item in evidence if isinstance(item, Passage)]
+    comparisons, claims, note = [], [], None
+    for stage in compile_section(section):
+        if stage.kind is StageKind.CALCULATE:
+            comparisons = changes_for(rows, quarter, section.time.comparison_offset())
+        if stage.kind is StageKind.DRAFT:
+            if section.kind == "themes":
+                claims = [claim.model_dump(mode="json") for claim in draft_themes(section.instruction, passages, gateway)]
+            else:
+                note = draft_note(section.instruction, rows, gateway)
+        if stage.kind is StageKind.NUMERIC_CHECK and any(
+            row.actual is None or not row.actual.is_finite() or not row.citation.id for row in rows
+        ):
+            raise GatewayError("invalid_numeric_evidence")
+    return {
+        "id": section.id,
+        "title": section.title,
+        "resolved_periods": [quarter.shifted(offset).model_dump() for offset in section.time.resolved_offsets()],
+        "rows": [row.model_dump(mode="json") for row in rows],
+        "note": note,
+        "claims": claims,
+        "comparison": comparisons[0] if comparisons else None,
+        "comparisons": comparisons,
+    }
+
+
+def changes_for(rows: list[BenchmarkFact], quarter: Period, offset: int) -> list[dict]:
+    older = quarter.shifted(offset)
+
+    def key(row):
+        return row.bank, row.metric, row.segment
+
+    priors = {key(row): row for row in rows if row.period == older}
+    comparisons = []
+    for primary in rows:
+        baseline = priors.get(key(primary))
+        if primary.period == quarter and baseline is not None:
+            value = compute_change(primary, baseline)
+            comparisons.append({
+                "value": str(value) if value is not None else None,
+                "basis": primary.change_basis, "metric": primary.metric, "segment": primary.segment,
+                "offset": offset, "citation_ids": [primary.citation.id, baseline.citation.id],
+            })
+    return comparisons
+
+
+def draft_note(instruction: str, rows: list[BenchmarkFact], gateway) -> dict | None:
+    choice = gateway.choose_observation(instruction, [row.citation.id for row in rows])
+    if choice is None:
+        return None
+    cited = next((row for row in rows if row.citation.id == choice), None)
+    if cited is None:
+        raise GatewayError("invalid_model_output")
+    return {"citation_id": choice, "text": f"{cited.metric} for {cited.period}: {display_value(cited)}."}
 
 
 def display_value(fact: BenchmarkFact) -> str:
     suffix = f" {fact.unit}" if fact.unit and fact.unit != "%" else fact.unit or " (unit unknown)"
     currency = f" {fact.currency} (unconfirmed)" if fact.currency else ""
     return f"{fact.actual}{suffix}{currency}"
-
-
-def report_diff(baseline: dict, preview: dict) -> dict[str, list[str]]:
-    before = {section["id"]: section for section in baseline["sections"]}
-    after = {section["id"]: section for section in preview["sections"]}
-    return {
-        "added": sorted(after.keys() - before.keys()),
-        "removed": sorted(before.keys() - after.keys()),
-        "changed": sorted(key for key in before.keys() & after.keys() if before[key] != after[key]),
-    }
 
 
 def render_html(result: dict) -> str:
@@ -85,27 +103,42 @@ def render_html(result: dict) -> str:
             )
     sources = {}
     for section in result["sections"]:
-        blocks.extend([
-            f"<section><h2>{escape(section['title'])}</h2>",
-            "<table><thead><tr><th>Bank</th><th>Fiscal period</th><th>Reported value</th><th>Evidence</th>"
-            "</tr></thead><tbody>",
-        ])
-        for row in section["rows"]:
-            fact = BenchmarkFact.model_validate(row)
-            sources[fact.citation.id] = fact.citation.locator
+        blocks.append(f"<section><h2>{escape(section['title'])}</h2>")
+        periods = ", ".join(str(Period.model_validate(item)) for item in section.get("resolved_periods", []))
+        if periods:
+            blocks.append(f"<p>Resolved periods: {escape(periods)}</p>")
+        if not section["rows"] and not section.get("claims"):
+            blocks.append("<p>No cited evidence matched this section.</p>")
+        if section["rows"]:
             blocks.append(
-                f"<tr><td>{escape(fact.bank)}</td><td>{escape(str(fact.period))}</td>"
-                f"<td>{escape(display_value(fact))}</td><td>{citation_link(fact.citation.id)}</td></tr>"
+                "<table><thead><tr><th>Bank</th><th>Metric</th><th>Fiscal period</th>"
+                "<th>Reported value</th><th>Evidence</th></tr></thead><tbody>"
             )
-        blocks.append("</tbody></table>")
+            for row in section["rows"]:
+                fact = BenchmarkFact.model_validate(row)
+                sources[fact.citation.id] = fact.citation.locator
+                blocks.append(
+                    f"<tr><td>{escape(fact.bank)}</td><td>{escape(fact.metric)}</td><td>{escape(str(fact.period))}</td>"
+                    f"<td>{escape(display_value(fact))}</td><td>{citation_link(fact.citation.id)}</td></tr>"
+                )
+            blocks.append("</tbody></table>")
         note = section["note"]
         if note:
             blocks.append(f"<p>{escape(note['text'])} {citation_link(note['citation_id'])}</p>")
-        change = section["comparison"]
-        if change:
-            label = f"{change['value']} {change['basis'].replace('_', ' ')}" if change["value"] else "Unavailable"
-            links = " ".join(citation_link(cite) for cite in change["citation_ids"])
-            blocks.append(f"<p>Change versus {abs(change['offset'])} fiscal quarter(s) earlier: {escape(label)}. {links}</p>")
+        for change in section.get("comparisons") or [section["comparison"]]:
+            if change:
+                label = f"{change['value']} {change['basis'].replace('_', ' ')}" if change["value"] else "Unavailable"
+                links = " ".join(citation_link(cite) for cite in change["citation_ids"])
+                metric = f"{escape(change['metric'])}: " if change.get("metric") else ""
+                blocks.append(
+                    f"<p>{metric}change versus {abs(change['offset'])} fiscal quarter(s) earlier: "
+                    f"{escape(label)}. {links}</p>"
+                )
+        for claim in section.get("claims", []):
+            for citation in claim["citations"]:
+                sources[citation["id"]] = citation["locator"]
+            refs = " ".join(citation_link(id_) for id_ in claim["evidence_ids"])
+            blocks.append(f"<p><strong>{escape(claim['topic'])}</strong> · {escape(claim['text'])} {refs}</p>")
         blocks.append("</section>")
     blocks.append("<section><h2>Sources</h2><ol>")
     for citation_id, locator in sources.items():

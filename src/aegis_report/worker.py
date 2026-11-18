@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from time import sleep
 from uuid import uuid4
@@ -11,14 +12,62 @@ from psycopg.types.json import Jsonb
 from .auth import OwnerStatusChecker, UnwiredOwnerStatus
 from .config import Settings
 from .db import connect
-from .engine import generate_report, report_diff
+from .diff import report_diff
+from .documents import build_sources
+from .engine import generate_report
 from .gateway import CredentialProvider, GatewayError, ModelGateway, build_gateway
-from .models import Period, ReportSpec, SourceName
+from .models import BenchmarkInput, EarningsInput, Period, ReportSpec, SectionInput, SourceName
 from .readiness import observe, record_observation
 from .repository import period_scopes
-from .sources import BankCatalog, BenchmarkingSource, Probe, Readiness, Scope, SourceIssue, opaque_id
+from .sources import BankCatalog, Probe, Readiness, Scope, SourceIssue, opaque_id
 
 logger = logging.getLogger(__name__)
+
+
+
+@dataclass(frozen=True)
+class RequestScope:
+    key: str
+    section_id: str
+    bank: str
+    period: Period
+    selector: SectionInput
+
+    @property
+    def source(self) -> SourceName:
+        return SourceName(self.selector.source)
+
+    @property
+    def topics(self) -> tuple[str, ...]:
+        if isinstance(self.selector, EarningsInput):
+            return tuple(self.selector.topics)
+        if not isinstance(self.selector, BenchmarkInput):
+            return (self.selector.topic,)
+        return ()
+
+    def source_scope(self, bank) -> Scope:
+        if isinstance(self.selector, BenchmarkInput):
+            return Scope(bank, self.period, self.selector.metric, self.selector.segment)
+        return Scope(bank, self.period, topics=self.topics)
+
+    def describe(self) -> dict:
+        return {
+            "source": self.source, "bank": self.bank, "period": self.period.model_dump(),
+            "required": self.selector.required, "selector": self.selector.model_dump(mode="json"),
+        }
+
+
+def requests_for(spec: ReportSpec, period: Period) -> list[RequestScope]:
+    shifts = period_scopes(spec, period)
+    return [
+        RequestScope(
+            f"{section.id}:{index}:{offset}" if index else f"{section.id}:{offset}",
+            section.id, section.bank, target, selector,
+        )
+        for section in spec.sections
+        for offset, target in shifts[section.id].items()
+        for index, selector in enumerate(section.sources)
+    ]
 
 
 class Worker:
@@ -31,7 +80,7 @@ class Worker:
         self.owner_status = owner_status or UnwiredOwnerStatus(settings.local)
         self.clock = clock or (lambda: datetime.now(UTC))
         self.catalog = BankCatalog()
-        self.source = BenchmarkingSource(settings.currencies)
+        self.sources = build_sources(settings)
 
     def _claim(self, now):
         with connect(self.settings.report_dsn) as conn:
@@ -64,19 +113,25 @@ class Worker:
             spec = ReportSpec.model_validate(job["spec"])
             period = Period.model_validate(job["period"])
             automatic = job["trigger_kind"] == "automatic"
+            requests = requests_for(spec, period)
             try:
-                readiness, facts = self._observe_sources(spec, period, readiness, started_at, automatic)
+                readiness, evidence = self._observe_sources(requests, readiness, started_at, automatic)
             except psycopg.Error:
                 unavailable = Probe(state=Readiness.UNKNOWN, reason="source_unavailable")
-                readiness = {"source": observe(unavailable, {}, started_at, self.settings.quiet_seconds)}
-                facts = None if automatic else {section.id: {} for section in spec.sections}
-            if facts is None:
-                physical_ready = all(entry["state"] == Readiness.READY for entry in readiness.values())
+                readiness = {
+                    item.key: observe(unavailable, {}, started_at, self.settings.quiet_seconds) | item.describe()
+                    for item in requests
+                }
+                evidence = None if automatic else {section.id: [] for section in spec.sections}
+            if evidence is None:
+                physical_ready = all(
+                    entry["state"] == Readiness.READY for entry in readiness.values() if entry["required"]
+                )
                 interval = self.settings.quiet_seconds if physical_ready else min(self.settings.quiet_seconds, 60)
                 next_probe += timedelta(seconds=max(self.settings.poll_seconds, interval))
                 state = "waiting"
             else:
-                result = generate_report(spec, period, facts, self.gateway)
+                result = generate_report(spec, period, evidence, self.gateway)
                 result["readiness"] = readiness
                 if job["baseline_id"] is not None:
                     self._apply_diff(job, result)
@@ -113,49 +168,98 @@ class Worker:
             raise SourceIssue(Readiness.UNKNOWN, "baseline_unavailable")
         comparison = baseline["result"]
         if job["preview_section_id"]:
-            comparison = {"sections": [
+            comparison = comparison | {"sections": [
                 section for section in comparison["sections"] if section["id"] == job["preview_section_id"]
             ]}
-        output["diff"] = report_diff(comparison, output)
+        output["diff"], details = report_diff(comparison, output)
+        output["diff_details"] = details.model_dump(mode="json")
         output["baseline_run_id"] = str(job["baseline_id"])
 
-    def _observe_sources(self, spec, period, previous, now, automatic):
+    def _vectors(self, requests, previous, automatic):
+        if automatic and not previous:
+            return {}
+        topics = dict.fromkeys(
+            request.topics for request in requests if getattr(request.selector, "vector", False)
+        )
+        vectors = {}
+        for selection in list(topics)[:6]:
+            try:
+                vectors[selection] = self.gateway.embed(" · ".join(selection))
+            except GatewayError:
+                # Lexical classification and lookup remain available after an optional embedding failure.
+                continue
+        return vectors
+
+    def _observe_sources(self, requests, previous, now, automatic):
+        vectors = self._vectors(requests, previous, automatic)
         with connect(self.settings.source_dsn, source=True) as source_conn:
-            items = []
-            shifts = period_scopes(spec, period)
-            for section in spec.sections:
-                bank = self.catalog.resolve(source_conn, section.bank)
-                query = section.sources[0]
-                for offset, target in shifts[section.id].items():
-                    items.append((section.id, offset, Scope(bank, target, query.metric, query.segment)))
-            hint = {scope: self.catalog.hinted(source_conn, scope, SourceName.BENCHMARKING)
-                    for scope in dict.fromkeys(item[2] for item in items)}
-            probes = {scope: self.source.probe(source_conn, scope) for scope in sorted(hint, key=lambda s: not hint[s])}
+            banks, items, readiness = {}, [], {}
+            for item in requests:
+                if item.bank not in banks:
+                    try:
+                        banks[item.bank] = self.catalog.resolve(source_conn, item.bank)
+                    except SourceIssue as issue:
+                        banks[item.bank] = issue
+                bank = banks[item.bank]
+                if isinstance(bank, SourceIssue):
+                    probe = Probe(state=bank.state, reason=bank.reason)
+                    readiness[item.key] = observe(probe, {}, now, self.settings.quiet_seconds) | item.describe()
+                else:
+                    items.append((item, (item.source, item.source_scope(bank))))
+
+            distinct = dict.fromkeys(query for _, query in items)
+            hints = {query: self.catalog.hinted(source_conn, query[1], query[0]) for query in distinct}
+            probes = {
+                (source, scope): self.sources[source].probe(source_conn, scope)
+                for source, scope in sorted(distinct, key=lambda q: not hints[q])
+            }
+            keys = {
+                (source, scope): opaque_id(source, scope.bank.symbol, str(scope.period), scope.metric, scope.segment)
+                for source, scope in probes
+            }
+            # The marker records physical scope and intentionally ignores topical or ranking preferences.
+            by_key = {keys[query]: probe for query, probe in probes.items()}
             with connect(self.settings.report_dsn) as report_conn:
-                # Establish the same row-lock order for runs sharing multiple scope keys.
-                keys = {scope: opaque_id(SourceName.BENCHMARKING, scope.bank.symbol, str(scope.period),
-                                         scope.metric, scope.segment) for scope in probes}
                 stabilities = {
-                    scope: record_observation(report_conn, keys[scope], probes[scope], now, self.settings.quiet_seconds)
-                    for scope in sorted(probes, key=keys.get)
+                    key: record_observation(report_conn, key, by_key[key], now, self.settings.quiet_seconds)
+                    for key in sorted(by_key)
                 }
-            readiness = {}
-            for section_id, offset, scope in items:
-                key = f"{section_id}:{offset}"
-                readiness[key] = observe(probes[scope], previous.get(key, {}), now, self.settings.quiet_seconds) | {
-                    "data_stability": stabilities[scope], "source": SourceName.BENCHMARKING,
-                    "bank": scope.bank.symbol, "period": scope.period.model_dump(), "required": True,
-                }
-            if automatic and not all(entry["stable"] for entry in readiness.values()):
+
+            for item, query in items:
+                readiness[item.key] = observe(
+                    probes[query], previous.get(item.key, {}), now, self.settings.quiet_seconds
+                ) | item.describe() | {"data_stability": stabilities[keys[query]]}
+                if not automatic:
+                    readiness[item.key]["stable"] = stabilities[keys[query]] == "stable"
+
+            if automatic and any(entry["required"] and not entry["stable"] for entry in readiness.values()):
                 return readiness, None
-            # Read each ready scope from the same read-only snapshot used to probe it.
-            by_scope = {scope: self.source.search(source_conn, scope)[0]
-                        for scope, probe in probes.items() if probe.state is Readiness.READY}
-            facts = {section.id: {} for section in spec.sections}
-            for section_id, offset, scope in items:
-                if scope in by_scope:
-                    facts[section_id][offset] = by_scope[scope]
-            return readiness, facts
+
+            evidence = {item.section_id: [] for item in requests}
+            selected = {}
+            for item, query in items:
+                if probes[query].state is not Readiness.READY:
+                    continue
+                source, scope = query
+                use_vector = getattr(item.selector, "vector", False)
+                search_key = (query, use_vector)
+                if search_key not in selected:
+                    try:
+                        selected[search_key] = self.sources[source].search(
+                            source_conn, scope, vectors.get(item.topics) if use_vector else None,
+                        )
+                    except SourceIssue as issue:
+                        selected[search_key] = issue
+                hits = selected[search_key]
+                if isinstance(hits, SourceIssue):
+                    readiness[item.key].update(
+                        state=hits.state, reason=hits.reason, stable=False, since=None, data_stability="unknown",
+                    )
+                    if automatic and item.selector.required:
+                        return readiness, None
+                else:
+                    evidence[item.section_id].extend(hits[:12])
+            return readiness, evidence
 
 
 def main(

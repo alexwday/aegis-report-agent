@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
 from hashlib import sha256
+from math import isfinite
 from typing import Literal, Protocol
 
 from psycopg import Connection
@@ -53,6 +54,7 @@ class Scope:
     period: Period
     metric: str | None = None
     segment: str = "Enterprise"
+    topics: tuple[str, ...] = ()
 
 
 ChangeBasis = Literal["basis_points", "percent_change", "unknown"]
@@ -74,14 +76,27 @@ class BenchmarkFact(StrictModel):
     citation: Citation
 
 
-class EarningsBlock(StrictModel):
+class Passage(StrictModel):
     bank: str
     period: Period
+    text: str
+    topics: tuple[str, ...] = ()
+    distance: float | None = None
+    citation: Citation
+
+
+class EarningsBlock(Passage):
     generation: str
     edition: str
     version: str | None
-    text: str
-    citation: Citation
+
+
+def vector_literal(vector: list[float] | None) -> str | None:
+    if vector is None:
+        return None
+    if len(vector) != 3072 or not all(isfinite(value) for value in vector) or not any(vector):
+        raise ValueError("Invalid query embedding")
+    return "[" + ",".join(str(float(value)) for value in vector) + "]"
 
 
 class SourceIssue(Exception):
@@ -93,7 +108,7 @@ class SourceIssue(Exception):
 
 class SourceAdapter(Protocol):
     def probe(self, conn: SourceConnection, scope: Scope) -> Probe: ...
-    def search(self, conn: SourceConnection, scope: Scope) -> list[BenchmarkFact] | list[EarningsBlock]: ...
+    def search(self, conn: SourceConnection, scope: Scope, vector: list[float] | None = None) -> list[BenchmarkFact] | list[Passage]: ...
     def anchors(self, conn: SourceConnection, scope: Scope) -> list[Citation]: ...
 
 
@@ -175,7 +190,7 @@ class BenchmarkingSource:
             state, reason = Readiness.READY, None
         return Probe(state=state, reason=reason, marker=opaque_id(marker))
 
-    def search(self, conn: SourceConnection, scope: Scope) -> list[BenchmarkFact]:
+    def search(self, conn: SourceConnection, scope: Scope, vector: list[float] | None = None) -> list[BenchmarkFact]:
         if scope.metric is None:
             raise SourceIssue(Readiness.UNKNOWN, "metric_required")
         rows = self._rows(conn, scope)
@@ -216,7 +231,19 @@ class BenchmarkingSource:
         return [fact.citation for fact in self.search(conn, scope)]
 
 
+def vendor_identity(filename: str | None) -> tuple[str, str] | None:
+    if not filename or not filename.endswith(".xml"):
+        return None
+    parts = filename[:-4].rsplit("_", 2)
+    if len(parts) != 3 or not parts[0] or not all(re.fullmatch(r"[0-9]{1,40}", part) for part in parts[1:]):
+        return None
+    return parts[1], parts[2]
+
+
 class EarningsSource:
+    def __init__(self, distance_threshold: float = 0.35):
+        self.distance_threshold = distance_threshold
+
     def _inventory(self, conn: SourceConnection, scope: Scope) -> tuple[list[DictRow], list[DictRow]]:
         legacy = conn.execute("""
             SELECT event_id, version_id, transcript_type, filename, institution_id,
@@ -237,12 +264,8 @@ class EarningsSource:
     def _coverage(self, scope: Scope, legacy: list[DictRow], unified: list[DictRow]) -> Probe:
         marker = opaque_id(legacy, unified)
         if legacy and unified:
-            # The unified schema has no event_id column. Only compare IDs on vendor-pattern filenames.
-            unified_ids = {
-                match[1] for row in unified
-                if (match := re.fullmatch(r".+_Q[1-4]_\d{4}_(?:Corrected|Raw)_(\d+)_\d+\.xml", row["filename"]))
-            }
-            legacy_ids = {row["event_id"] for row in legacy}
+            unified_ids = {identity[0] for row in unified if (identity := vendor_identity(row["filename"]))}
+            legacy_ids = {identity[0] for row in legacy if (identity := vendor_identity(row["filename"]))}
             reason = "cross_generation_event_overlap" if unified_ids & legacy_ids else "cross_generation_conflict"
             return Probe(state=Readiness.UNKNOWN, generation="conflict", marker=marker, reason=reason)
         if legacy:
@@ -257,6 +280,10 @@ class EarningsSource:
             if len(unified) != 1:
                 return Probe(state=Readiness.INCOMPLETE, generation="unified", marker=marker,
                              reason="multiple_unified_editions")
+            filename = unified[0]["filename"]
+            if vendor_identity(filename) is None or filename.rsplit("_", 3)[-3] not in ("Corrected", "Raw"):
+                return Probe(state=Readiness.INCOMPLETE, generation="unified", marker=marker,
+                             reason="unverified_unified_edition")
             return Probe(state=Readiness.READY, generation="unified", marker=marker)
         return Probe(state=Readiness.ABSENT, marker=marker, reason="no_earnings_call")
 
@@ -269,15 +296,15 @@ class EarningsSource:
     def _winning_editions(self, editions: list[DictRow]) -> list[DictRow]:
         events = defaultdict(list)
         for edition in editions:
-            version = edition["version_id"] or ""
+            identity = vendor_identity(edition["filename"])
             if (
-                not edition["event_id"] or not edition["filename"]
+                identity is None or identity != (edition["event_id"], edition["version_id"])
                 or edition["transcript_type"] not in ("Corrected", "Raw")
-                or not re.fullmatch(r"[0-9]{1,40}", version)
             ):
                 raise SourceIssue(Readiness.INCOMPLETE, "unverified_legacy_edition")
+            event, version = identity
             rank = (edition["transcript_type"] == "Corrected", int(version))
-            events[edition["event_id"]].append((rank, edition))
+            events[event].append((rank, edition))
         winners = []
         for versions in events.values():
             ordered = sorted(versions, key=lambda version: version[0], reverse=True)
@@ -286,31 +313,51 @@ class EarningsSource:
             winners.append(ordered[0][1])
         return winners
 
-    def search(self, conn: SourceConnection, scope: Scope) -> list[EarningsBlock]:
+    def search(self, conn: SourceConnection, scope: Scope, vector: list[float] | None = None) -> list[EarningsBlock]:
         legacy, unified = self._inventory(conn, scope)
         probe = self._coverage(scope, legacy, unified)
         if probe.state is Readiness.ABSENT:
             return []
         if probe.state is not Readiness.READY:
             raise SourceIssue(probe.state, probe.reason or "earnings_not_ready")
+        query = vector_literal(vector)
         if legacy:
             versions = self._winning_editions(legacy)
             if sum(version["chunks"] for version in versions) > 400:
                 raise SourceIssue(Readiness.INCOMPLETE, "earnings_call_exceeds_chunk_limit")
-            return [block for version in versions for block in self._legacy_blocks(conn, scope, version)]
-        if unified[0]["chunks"] > 400:
-            raise SourceIssue(Readiness.INCOMPLETE, "earnings_call_exceeds_chunk_limit")
-        return self._unified_blocks(conn, scope, unified[0])
+            blocks = [block for version in versions for block in self._legacy_blocks(conn, scope, version, query)]
+        else:
+            if unified[0]["chunks"] > 400:
+                raise SourceIssue(Readiness.INCOMPLETE, "earnings_call_exceeds_chunk_limit")
+            blocks = self._unified_blocks(conn, scope, unified[0], query)
+        if not scope.topics:
+            return blocks
+        matching = []
+        for block in blocks:
+            tags = {tag.casefold() for tag in block.topics}
+            topics = tuple(
+                topic for topic in scope.topics
+                if topic.casefold() in tags or (
+                    block.generation == "unified" and unified_topic_match(topic, block.text)
+                )
+            )
+            if not topics and block.distance is not None and block.distance <= self.distance_threshold:
+                topics = scope.topics
+            if topics:
+                matching.append(block.model_copy(update={"topics": topics}))
+        return matching
 
-    def _legacy_blocks(self, conn: SourceConnection, scope: Scope, edition: DictRow) -> list[EarningsBlock]:
+    def _legacy_blocks(self, conn: SourceConnection, scope: Scope, edition: DictRow, query: str | None) -> list[EarningsBlock]:
         rows = conn.execute("""
-            SELECT title, section_name, speaker_block_id, qa_group_id, chunk_id, left(chunk_content, 16001) AS body
+            SELECT title, section_name, speaker_block_id, qa_group_id, chunk_id, classification_names,
+                   left(chunk_content, 16001) AS body,
+                   chunk_embedding OPERATOR(public.<=>) %s::public.vector(3072) AS distance
             FROM public.aegis_transcripts
             WHERE ticker = %s AND fiscal_year = %s AND fiscal_quarter = %s AND institution_id = %s
               AND event_id = %s AND transcript_type = %s AND version_id = %s AND filename = %s
             ORDER BY CASE WHEN section_name = 'MANAGEMENT DISCUSSION SECTION' THEN 0 ELSE 1 END,
                      qa_group_id NULLS FIRST, speaker_block_id, chunk_id, id
-        """, (scope.bank.symbol, scope.period.year, f"Q{scope.period.quarter}", str(scope.bank.id),
+        """, (query, scope.bank.symbol, scope.period.year, f"Q{scope.period.quarter}", str(scope.bank.id),
               edition["event_id"], edition["transcript_type"], edition["version_id"], edition["filename"]))
         blocks = []
         for row in rows:
@@ -319,6 +366,7 @@ class EarningsSource:
             blocks.append(EarningsBlock(
                 bank=scope.bank.symbol, period=scope.period, generation="legacy",
                 edition=edition["transcript_type"], version=edition["version_id"], text=text,
+                topics=tuple(row["classification_names"] or ()), distance=row["distance"],
                 citation=Citation(id=opaque_id("legacy", scope.bank.symbol, edition["event_id"],
                                                edition["version_id"], edition["latest"], coordinates),
                                   source=SourceName.EARNINGS,
@@ -327,19 +375,32 @@ class EarningsSource:
             ))
         return blocks
 
-    def _unified_blocks(self, conn: SourceConnection, scope: Scope, edition: DictRow) -> list[EarningsBlock]:
+    def _unified_blocks(self, conn: SourceConnection, scope: Scope, edition: DictRow, query: str | None) -> list[EarningsBlock]:
         rows = conn.execute("""
-            SELECT page_number, chunk_id, name, left(chunk_content, 16001) AS body
-            FROM public."aegis-earnings-transcripts-data"
-            WHERE bank = %s AND fiscal_year = %s AND quarter = %s AND file_id = %s AND file_hash = %s
-            ORDER BY page_number NULLS LAST, chunk_id
-        """, (scope.bank.symbol, str(scope.period.year), f"Q{scope.period.quarter}",
+            SELECT d.page_number, d.chunk_id, d.name, d.keywords,
+                   left(d.chunk_content, 16001) AS body,
+                   CASE WHEN %s::text IS NOT NULL THEN (
+                       SELECT min(e.embedding OPERATOR(public.<=>) %s::public.vector(3072))
+                       FROM public."aegis-earnings-transcripts-embeddings" e
+                       WHERE e.file_id = d.file_id AND e.file_hash = d.file_hash
+                         AND coalesce(e.chunk_id, e.content_unit_id) = d.chunk_id
+                         AND e.embedding_type = 'content' AND e.embedding_dimensions = 3072
+                         AND e.embedding_model IN ('text-embedding-3-large', 'text-embedding-3-large-eastus-dz')
+                   ) END AS distance
+            FROM public."aegis-earnings-transcripts-data" d
+            WHERE d.bank = %s AND d.fiscal_year = %s AND d.quarter = %s AND d.file_id = %s AND d.file_hash = %s
+            ORDER BY d.page_number NULLS LAST, d.chunk_id
+        """, (query, query, scope.bank.symbol, str(scope.period.year), f"Q{scope.period.quarter}",
               edition["file_id"], edition["file_hash"]))
+        identity = vendor_identity(edition["filename"])
+        transcript_type = edition["filename"].rsplit("_", 3)[-3]
         return [
             EarningsBlock(
-                bank=scope.bank.symbol, period=scope.period, generation="unified", edition="Corrected",
-                version=None, text=self._verified_text(row["body"]),
-                citation=Citation(id=opaque_id("unified", edition["file_id"], edition["file_hash"], row["chunk_id"]),
+                bank=scope.bank.symbol, period=scope.period, generation="unified", edition=transcript_type,
+                version=identity[1], text=self._verified_text(row["body"]),
+                topics=keyword_labels(row["keywords"]), distance=row["distance"],
+                citation=Citation(id=opaque_id("unified", identity, edition["file_id"], edition["file_hash"],
+                                               row["chunk_id"]),
                                   source=SourceName.EARNINGS,
                                   locator=f"{row['name'] or 'Earnings call'} · sequence {row['page_number']} · "
                                           f"{row['chunk_id']}"),
@@ -357,20 +418,28 @@ class EarningsSource:
         return [block.citation for block in self.search(conn, scope)]
 
 
+
+def unified_topic_match(topic: str, body: str) -> bool:
+    # Unified calls have keywords and speaker text, but no classification_names array.
+    body = body.casefold()
+    components = [part.strip() for part in topic.casefold().split("&")]
+    return any(len(term) >= 4 and re.search(r"(?<!\w)" + re.escape(term) + r"(?!\w)", body)
+               for term in components)
+
+
 class DisabledSource:
     def probe(self, conn: SourceConnection, scope: Scope) -> Probe:
         return Probe(state=Readiness.UNKNOWN, reason="not_enabled")
 
-    def search(self, conn: SourceConnection, scope: Scope) -> list[BenchmarkFact]:
+    def search(self, conn: SourceConnection, scope: Scope, vector: list[float] | None = None) -> list[BenchmarkFact]:
         raise SourceIssue(Readiness.UNKNOWN, "not_enabled")
 
     def anchors(self, conn: SourceConnection, scope: Scope) -> list[Citation]:
         raise SourceIssue(Readiness.UNKNOWN, "not_enabled")
 
 
-def build_sources(currencies: dict[str, str]) -> dict[SourceName, SourceAdapter]:
-    enabled = {SourceName.BENCHMARKING: BenchmarkingSource(currencies), SourceName.EARNINGS: EarningsSource()}
-    return {name: enabled.get(name, DisabledSource()) for name in SourceName}
+def keyword_labels(value: object) -> tuple[str, ...]:
+    return tuple(tag for tag in value if isinstance(tag, str)) if isinstance(value, list) else ()
 
 
 def compute_change(current: BenchmarkFact, prior: BenchmarkFact) -> Decimal | None:

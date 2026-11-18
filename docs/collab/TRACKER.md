@@ -12,7 +12,7 @@
 | T-010 | G2 | Verify page anchors, metadata probes and distance limits against fixtures. | DONE | [PostgreSQL tests](../../tests/test_postgres.py) |
 | T-011 | G3 | Expose typed stage output and gather-only previews. | DONE | [Stage compiler](../../src/aegis_report/models.py), [engine](../../src/aegis_report/engine.py) |
 | T-012 | G3 | Add personal templates and offline PDF export. | DONE | [PDF](../../src/aegis_report/pdf_export.py), [system templates](../../src/aegis_report/templates.py) |
-| T-013 | G4 | Build chat turn lifecycle, typed tools, resumable SSE, fallback turn result and provider tests. | TODO | |
+| T-013 | G4 | Build chat turn lifecycle, typed tools, resumable SSE, fallback turn result and provider tests. | DONE | [Chat agent](../../src/aegis_report/chat_agent.py), [tests](../../tests/test_postgres.py) |
 | T-014 | G5 | Build a thin developer console and write the Functions Assist UI/SSE contracts. | TODO | |
 | T-015 | G6 | Implement quarterly scheduling and corrections, readiness, retries, fencing and opt-in provisional publication. | TODO | |
 | T-016 | G7 | Complete security/privacy review, load/cost testing, OpenAPI contract, and operations handoff. | TODO | |
@@ -31,3 +31,9 @@
 | T-029 | G3 | Add citation-detail excerpts and pinned schedule definition/enqueue. | DONE | [API contract](../../api/openapi.json), [schedule migration](../../db/migrations/007_schedule_definition.sql) |
 | T-030 | G3 | Demonstrate three sections, staged preview, personal template and linked PDF. | DONE | [Demo](../../scripts/demo.py), [status](status/S-004.md) |
 | T-031 | G3 | Submit S-004 and wait at G3 for R-004. | DONE | [S-004](status/S-004.md), `review-004` |
+| T-032 | G4 | Filter RTS boilerplate and rank body text, summary titles and management discussion. | DONE | [RTS adapter](../../src/aegis_report/documents.py) |
+| T-033 | G4 | Quote substantive slide and RTS units and expose claims and shortlists in evaluation. | DONE | [Claim units](../../src/aegis_report/claims.py), [evaluation](../../scripts/eval_documents.py) |
+| T-034 | G4 | Add explicit bank lists and the core Canadian peer group, with comparable statistics and per-bank diffs. | DONE | [Peers](../../src/aegis_report/peers.py), [diff](../../src/aegis_report/diff.py) |
+| T-035 | G4 | Run chat acceptance cases and provide stub and real gateway evaluation. | DONE | [Cases](../../tests/fixtures/chat_requests.json), [evaluation](../../scripts/eval_chat.py) |
+| T-036 | G4 | Demonstrate chat preview, accept, diff and save. Add PDF headers and schedule history. | DONE | [Demo](../../scripts/demo.py), [API contract](../../api/openapi.json) |
+| T-037 | G4 | Submit S-005 and wait at G4 for R-005. | REVIEW | [S-005](status/S-005.md), `review-005` |

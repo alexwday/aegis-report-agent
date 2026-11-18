@@ -1,4 +1,4 @@
--- G0 design draft. The G1 migration will follow the review.
+-- Historical G0 design draft. See db/migrations for the reviewed G1 runtime schema.
 CREATE SCHEMA rpt;
 
 CREATE TABLE rpt.users (

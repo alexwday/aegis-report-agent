@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+source scripts/local-db.sh
+trap stop_local_db EXIT
+uv sync --locked
+start_local_db
+uv run --no-sync python -m aegis_report.migrate
+export AEGIS_TEST_FIXTURE=1
+uv run --no-sync pytest "$@"

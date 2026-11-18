@@ -1,0 +1,17 @@
+name: Verify API contract
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - run: uv run --no-sync ruff check .
+      - run: uv run --no-sync python scripts/openapi.py --check
+      - run: uv run --no-sync pytest -m 'not postgres'

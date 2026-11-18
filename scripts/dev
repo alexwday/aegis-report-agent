@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+source scripts/local-db.sh
+
+mode="${1:-}"
+if [[ -n "$mode" && "$mode" != --demo ]]; then
+    echo 'Usage: ./scripts/dev [--demo]' >&2
+    exit 2
+fi
+cleanup() {
+    if [[ -n "${api_pid:-}" ]]; then kill "$api_pid" 2>/dev/null || true; fi
+    if [[ -n "${worker_pid:-}" ]]; then kill "$worker_pid" 2>/dev/null || true; fi
+    for child in "${api_pid:-}" "${worker_pid:-}"; do
+        if [[ -n "$child" ]]; then wait "$child" 2>/dev/null || true; fi
+    done
+    stop_local_db
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+uv sync --locked
+start_local_db
+export QUIET_SECONDS="${QUIET_SECONDS:-1}" WORKER_POLL_SECONDS="${WORKER_POLL_SECONDS:-0.15}"
+port="${AEGIS_DEV_PORT:-8000}"
+.venv/bin/python -m uvicorn aegis_report.api:app --host 127.0.0.1 --port "$port" --no-access-log > "$fixture_dir/api.log" 2>&1 &
+api_pid=$!
+.venv/bin/python -m aegis_report.worker > "$fixture_dir/worker.log" 2>&1 &
+worker_pid=$!
+
+for (( attempt=0; attempt<100; attempt++ )); do
+    if ! kill -0 "$api_pid" "$worker_pid" 2>/dev/null; then
+        cat "$fixture_dir/api.log" "$fixture_dir/worker.log" >&2
+        exit 1
+    fi
+    if curl --noproxy '*' --silent --fail "http://127.0.0.1:$port/health" >/dev/null; then
+        break
+    fi
+    sleep 0.1
+done
+if (( attempt == 100 )); then
+    cat "$fixture_dir/api.log" "$fixture_dir/worker.log" >&2
+    exit 1
+fi
+echo "Local API and worker ready at http://127.0.0.1:$port"
+if [[ "$mode" == --demo ]]; then
+    .venv/bin/python scripts/demo.py "http://127.0.0.1:$port"
+else
+    while kill -0 "$api_pid" "$worker_pid" 2>/dev/null; do
+        sleep 0.25
+    done
+    cat "$fixture_dir/api.log" "$fixture_dir/worker.log" >&2
+    exit 1
+fi

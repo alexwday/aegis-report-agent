@@ -62,7 +62,6 @@ SELECT 'PostgreSQL ' || current_setting('server_version') || ', pgvector ' || ex
 FROM pg_extension WHERE extname = 'vector';
 SELECT '19 populated source fixture tables with expected column counts';
 SELECT 'Unified joins, quoted KPIs, transcript version overlap, and halfvec cosine passed';
-SELECT count(*) || ' draft rpt tables applied' FROM information_schema.tables WHERE table_schema = 'rpt';
 
 DO $catalog$
 DECLARE

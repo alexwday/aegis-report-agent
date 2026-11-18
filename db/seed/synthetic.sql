@@ -121,7 +121,7 @@ INSERT INTO public.rts_embedding
      raw_text, propositions, tables, source_section, embedding)
 SELECT timestamptz '2090-08-10 00:00:00+00', 1, 9, bank.symbol, 'Q3', 2090,
        bank.short || '-fixture-rts.pdf.md', 'Synthetic credit quality',
-       'The fixture provision was 47 million.', '{"The fixture provision was 47 million."}',
+       'The fixture provision was 47 million. Credit quality remained steady as the fictional loan portfolio grew.', '{"The fixture provision was 47 million."}',
        '<table><tr><td>Fixture provision</td><td>47</td></tr></table>',
        'Fixture results > Credit quality', vectors.embedding::halfvec(3072)
 FROM seed_bank bank JOIN seed_vector vectors ON vectors.id = 1

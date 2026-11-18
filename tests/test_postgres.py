@@ -682,3 +682,50 @@ def test_preview_marks_unmatched_document_focus(settings):
         entry = result["readiness"]["missing-doc-theme:0"]
         assert entry["state"] == "ready" and entry["evidence_state"] == "no_match"
         assert "No evidence matched unmatched fixture phrase." in client.get(f"{output}/output.html").text
+
+
+def test_rts_prefers_management_narrative_and_caps_each_page(admin):
+    admin.execute("""
+        INSERT INTO public.rts_embedding
+            (created_at, chunk_id, page_no, bank, quarter, year, filename,
+             raw_text, source_section, summary_title, embedding)
+        SELECT d.created_at, sample.chunk, sample.page, d.bank, d.quarter, d.year, d.filename,
+               sample.body, sample.heading, sample.summary, d.embedding
+        FROM public.rts_embedding d CROSS JOIN (VALUES
+            (31, 1, '<!-- Page header: net interest margin net interest margin -->',
+             'Net interest margin', 'Net interest margin'),
+            (32, 2, 'Net interest margin.', 'Notes to the financial statements', 'Net interest margin'),
+            (34, 31, 'Net interest margin increased 13 basis points as fictional loan yields improved.',
+             'MD&A > Net interest margin', 'Net interest margin improved'),
+            (35, 31, 'The net interest margin increased 11 basis points as sample asset yields recovered.',
+             'MD&A > Net interest margin', 'Net interest margin rose'),
+            (36, 31, 'The net interest margin increased 10 basis points as deposit funding costs eased.',
+             'MD&A > Net interest margin', 'Net interest margin rose')
+        ) sample(chunk, page, body, heading, summary)
+        WHERE d.bank = 'SYN1-CA' AND d.page_no = 9
+    """)
+    adapter = RtsSource(0.35)
+    selected = replace(scope(admin), terms=("net interest margin",))
+    hits = adapter.search(admin, selected)
+    assert hits[0].citation.locator.endswith("page 31")
+    assert sum(hit.citation.locator.endswith("page 31") for hit in hits) == 2
+    assert all("Page header" not in hit.text and hit.text != "Net interest margin." for hit in hits)
+    assert hits == adapter.search(admin, selected)
+
+
+def test_document_claims_quote_bullets_and_exclude_reference_sections(admin):
+    from aegis_report.claims import draft_themes
+
+    adapter = SlideSource(0.35)
+    selected = replace(scope(admin), topics=("Net Interest Income & Margins",))
+    samples = adapter.search(admin, selected)
+    bullet = "Net interest margin increased 15 basis points as fictional funding costs eased"
+    head = samples[0].model_copy(update={"heading": "Highlights", "text": f"## Highlights\n• {bullet}"})
+    glossary = samples[-1].model_copy(update={
+        "heading": "Glossary",
+        "text": "Net interest margin is calculated as sample interest income divided by sample average assets.",
+    })
+    values = draft_themes("Highlight the net interest margin", [glossary, head], StubGateway())
+    assert [claim.text for claim in values] == [bullet]
+    assert values[0].evidence_ids == [head.citation.id]
+    assert draft_themes("Define net interest margin", [glossary], StubGateway())[0].text == glossary.text

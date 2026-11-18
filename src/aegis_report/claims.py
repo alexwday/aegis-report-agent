@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pydantic import Field, ValidationError
 
 from .gateway import GatewayError, ModelGateway
-from .models import Label, StrictModel
+from .models import Label, SourceName, StrictModel
 from .sources import Citation, Passage
 from .topics import lexical_hits, search_terms
 
@@ -29,6 +29,23 @@ SPEAKER_TAG = re.compile(r"^\s*\[([^\]\n]{1,160})\]\s*")
 WORD = re.compile(r"\b[\w'-]+\b")
 FOCUS_STOP = {"about", "from", "highlight", "show", "include", "identify", "quote", "claims", "topic", "the", "for",
               "report", "with", "cited", "evidence", "and", "financial", "context", "recent"}
+DOCUMENT_SOURCE = {SourceName.SLIDES, SourceName.RTS}
+DEFINITION_REQUEST = re.compile(r"\b(?:define|definitions?|what (?:is|does)|meaning of|glossary)\b", re.I)
+REFERENCE_HEADING = re.compile(
+    r"(?:^|[>:/–—-] ?)(?:[ #*_]*)(?:glossary|endnotes?|footnotes?|notes(?: to|$)|"
+    r"non.gaap|legal|forward.looking|disclaimer)\b", re.I,
+)
+DEFINITION_UNIT = re.compile(
+    r"\b(?:is|are) (?:defined|calculated|measured|computed) (?:as|by)\b|\brefers to\b|"
+    r"^(?-i:[A-Z][A-Z0-9 /()-]{1,30}):|^\s*(?:[*†‡]+|\[\d+\]|\(\d+\))\s+", re.I,
+)
+BULLET = re.compile(r"^\s*(?:[-*+•▪◦]\s+|\d{1,2}[.)]\s+)")
+QUANTIFIED = re.compile(r"\d[\d.,]*\s*(?:%|bps?\b|basis points?\b|million\b|billion\b|[×x]\b)|[$€£]\s*\d", re.I)
+SUBSTANTIVE = re.compile(
+    r"\b(?:rose|fell|grew|declined|increas\w*|decreas\w*|improv\w*|expand\w*|"
+    r"contract\w*|stable|held|driven|benefit\w*|reflect\w*|offset|lower|higher|unchanged)\b", re.I,
+)
+
 MAX_CANDIDATES = 50
 MAX_PROMPT_BYTES = 16_000  # UTF-8 byte ceiling also bounds the model's text token count.
 
@@ -60,8 +77,51 @@ class Candidate:
         return {"id": self.citation.id, "topic": self.topic, "text": self.text, "source": self.citation.source}
 
 
-def passage_candidates(passage: Passage, focus: set[str], semantic: bool):
+def document_units(passage: Passage, allow_definitions: bool):
+    if not allow_definitions and (
+        REFERENCE_HEADING.search(passage.heading or "")
+        or REFERENCE_HEADING.search(passage.text.lstrip().split("\n", 1)[0].strip())
+    ):
+        return
+    body = re.sub(r"<!--.*?-->", "", passage.text, flags=re.S)
+    for line in body.splitlines():
+        line = line.strip()
+        if not allow_definitions and REFERENCE_HEADING.search(line.lstrip("# ")):
+            break
+        bullet = BULLET.match(line)
+        line = line[bullet.end():] if bullet else line
+        if line.startswith(("|", "<")):
+            continue
+        # The displayed unit is copied from the source after removing structural markup.
+        parts = [line] if bullet else re.split(r"(?<=[.!?])\s+", line)
+        for part in parts:
+            text = " ".join(part.strip("*_ ").split())
+            quantified = bool(QUANTIFIED.search(text))
+            definition = bool(DEFINITION_UNIT.search(text))
+            if (not 20 <= len(text) <= 320 or len(WORD.findall(text)) < 4
+                or (definition and not allow_definitions)):
+                continue
+            if quantified or SUBSTANTIVE.search(text) or (allow_definitions and definition):
+                yield text, int(quantified)
+
+
+def document_candidates(passage: Passage, instruction: str, focus: set[str], semantic: bool):
+    vector_bonus = 2 * max(0, 1 - passage.distance) if semantic and passage.distance is not None else 0
+    for text, quantified in document_units(passage, bool(DEFINITION_REQUEST.search(instruction))):
+        intent = min(4, len(focus.intersection(WORD.findall(text.casefold()))))
+        for topic in passage.topics:
+            hits = lexical_hits(text, search_terms((topic,), passage.terms))
+            if hits or intent:
+                yield Candidate(topic, text, passage.citation,
+                                4 * hits + intent + 2 * quantified + min(2, passage.relevance or 0) + vector_bonus,
+                                passage.citation.id)
+
+
+def passage_candidates(passage: Passage, instruction: str, focus: set[str], semantic: bool):
     if INSTRUCTION_TEXT.search(passage.text):
+        return
+    if passage.citation.source in DOCUMENT_SOURCE:
+        yield from document_candidates(passage, instruction, focus, semantic)
         return
     tag = SPEAKER_TAG.match(passage.text)
     speaker = tag[1].split(",", 1)[0].casefold().strip() if tag else passage.speaker or passage.citation.id
@@ -102,7 +162,7 @@ def candidates_for(passages: list[Passage], instruction: str = "", *, semantic: 
     focus = focus_terms(instruction)
     unique = {}
     for passage in passages:
-        for item in passage_candidates(passage, focus, semantic):
+        for item in passage_candidates(passage, instruction, focus, semantic):
             unique.setdefault((item.topic, item.text, item.citation.id), item)
     # Rerank with a repetition penalty so multiple blocks and speakers contribute.
     sorted_candidates = sorted(unique.values(), key=lambda item: (-item.score, item.citation.id, item.text, item.topic))
@@ -141,10 +201,13 @@ def shortlist_passages(passages: list[Passage], instruction: str, *, semantic: b
     return [by_id[id_] for id_ in list(ranked_ids)[:40]]
 
 
-def draft_themes(instruction: str, passages: list[Passage], gateway: ModelGateway) -> list[ThemeClaim]:
-    candidates = candidates_for(
-        passages, instruction, semantic=getattr(gateway, "supports_semantic_ranking", False),
-    )
+def draft_themes(
+    instruction: str, passages: list[Passage], gateway: ModelGateway, *, candidates: list[Candidate] | None = None,
+) -> list[ThemeClaim]:
+    if candidates is None:
+        candidates = candidates_for(
+            passages, instruction, semantic=getattr(gateway, "supports_semantic_ranking", False),
+        )
     if not candidates:
         return []
     allowed = {(item.topic.casefold(), item.text, item.citation.id): item for item in candidates}

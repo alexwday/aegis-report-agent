@@ -38,7 +38,7 @@ class SlideSource:
             WITH terms AS (
                 SELECT phraseto_tsquery('english', phrase) AS term FROM unnest(%s::text[]) AS phrases(phrase)
             ), candidates AS (
-                SELECT d.file_path, d.file_hash, d.chunk_id, d.page_number, left(d.chunk_content, 16000) AS body,
+                SELECT d.file_path, d.file_hash, d.chunk_id, d.page_number, d.name, left(d.chunk_content, 16000) AS body,
                        setweight(to_tsvector('english', coalesce(d.name, '')), 'A') ||
                        setweight(to_tsvector('english', d.chunk_content), 'D') AS lexemes,
                        CASE WHEN %s::text IS NOT NULL THEN (
@@ -53,12 +53,12 @@ class SlideSource:
                 WHERE d.bank = %s AND d.fiscal_year = %s AND d.quarter = %s
                   AND d.page_number IS NOT NULL AND d.chunk_content <> ''
             ), ranked AS (
-                SELECT file_path, file_hash, chunk_id, page_number, body, distance,
+                SELECT file_path, file_hash, chunk_id, page_number, name, body, distance,
                        coalesce((SELECT sum(ts_rank_cd(lexemes, term, 34)) FROM terms
                                  WHERE lexemes @@ term), 0) AS rank
                 FROM candidates
             )
-            SELECT file_path, file_hash, chunk_id, page_number, body, distance, rank
+            SELECT file_path, file_hash, chunk_id, page_number, name, body, distance, rank
             FROM ranked
             WHERE rank > 0 OR distance <= %s OR %s
             ORDER BY rank + CASE WHEN distance IS NULL THEN 0 ELSE greatest(0, %s - distance) * 0.05 END DESC,
@@ -68,7 +68,8 @@ class SlideSource:
         return [
             Passage(
                 bank=scope.bank.symbol, period=scope.period, text=row["body"],
-                topics=scope.topics or scope.terms[:1], distance=row["distance"], relevance=row["rank"],
+                topics=scope.topics or scope.terms[:1], terms=scope.terms, distance=row["distance"], relevance=row["rank"],
+                heading=row["name"],
                 citation=Citation(
                     source=SourceName.SLIDES,
                     id=opaque_id(SourceName.SLIDES, row["file_path"], row["file_hash"],
@@ -102,30 +103,51 @@ class RtsSource:
         rows = conn.execute("""
             WITH terms AS (
                 SELECT phraseto_tsquery('english', phrase) AS term FROM unnest(%s::text[]) AS phrases(phrase)
-            ), candidates AS (
-                SELECT filename, created_at, page_no, chunk_id, left(raw_text, 16000) AS body,
-                       setweight(to_tsvector('english', coalesce(source_section, '')), 'A') ||
-                       setweight(to_tsvector('english', raw_text), 'D') AS lexemes,
+            ), clean AS (
+                SELECT id, filename, created_at, page_no, chunk_id, source_section, summary_title,
+                       btrim(regexp_replace(left(raw_text, 16000), '<!--.*?-->', 'g')) AS body,
                        embedding OPERATOR(public.<=>) %s::public.halfvec(3072) AS distance
                 FROM public.rts_embedding
                 WHERE bank = %s AND year = %s AND quarter = %s AND page_no IS NOT NULL AND raw_text <> ''
+            ), fields AS (
+                SELECT *, to_tsvector('english', coalesce(source_section, '')) AS heading,
+                       to_tsvector('english', coalesce(summary_title, '')) AS summary,
+                       to_tsvector('english', body) AS content,
+                       CASE WHEN lower(coalesce(source_section, '') || ' ' || coalesce(summary_title, ''))
+                             ~ 'glossary|endnotes?|footnotes?|notes to (the )?(consolidated )?financial|non.gaap|forward.looking|disclaimer'
+                            THEN 0.12 ELSE 1 END AS section_weight
+                FROM clean
+                WHERE body ~ '[[:alpha:]]' AND body !~* '^[[:space:]]*(page|footer|header)[[:space:]:#-]*[0-9[:space:]|/-]+$'
             ), ranked AS (
-                SELECT filename, created_at, page_no, chunk_id, body, distance,
-                       coalesce((SELECT sum(ts_rank_cd(lexemes, term, 34)) FROM terms
-                                 WHERE lexemes @@ term), 0) AS rank
-                FROM candidates
+                SELECT *, coalesce((SELECT sum(
+                            5 * (heading @@ term)::int + 3 * (summary @@ term)::int
+                            + least(2.0, ts_rank_cd(content, term, 0) * 8)
+                                * least(1.0, char_length(body) / 220.0)
+                        ) FROM terms), 0) * section_weight AS rank,
+                       EXISTS (SELECT 1 FROM terms WHERE heading @@ term) AS heading_match
+                FROM fields
+            ), eligible AS (
+                SELECT *, rank + CASE WHEN distance IS NULL THEN 0
+                    ELSE greatest(0, %s - distance) * 0.2 END AS score
+                FROM ranked
+                WHERE (char_length(body) >= 75 OR (heading_match AND section_weight = 1))
+                  AND (rank > 0 OR distance <= %s OR %s)
+            ), pages AS (
+                SELECT *, row_number() OVER (
+                    PARTITION BY filename, page_no ORDER BY score DESC, rank DESC, distance NULLS LAST, chunk_id, id
+                ) AS position
+                FROM eligible
             )
-            SELECT filename, created_at, page_no, chunk_id, body, distance, rank
-            FROM ranked
-            WHERE rank > 0 OR distance <= %s OR %s
-            ORDER BY rank + CASE WHEN distance IS NULL THEN 0 ELSE greatest(0, %s - distance) * 0.05 END DESC,
-                     rank DESC, distance NULLS LAST, filename, page_no, chunk_id LIMIT 8
+            SELECT filename, created_at, page_no, chunk_id, body, source_section, summary_title, distance, rank
+            FROM pages WHERE position <= 2
+            ORDER BY score DESC, rank DESC, distance NULLS LAST, filename, page_no, chunk_id, id LIMIT 8
         """, (terms, vector_literal(vector), scope.bank.symbol, scope.period.year, f"Q{scope.period.quarter}",
-              self.threshold, not scope.topics and not scope.terms, self.threshold))
+              self.threshold, self.threshold, not scope.topics and not scope.terms))
         return [
             Passage(
                 bank=scope.bank.symbol, period=scope.period, text=row["body"],
-                topics=scope.topics or scope.terms[:1], distance=row["distance"], relevance=row["rank"],
+                topics=scope.topics or scope.terms[:1], terms=scope.terms, distance=row["distance"], relevance=row["rank"],
+                heading=" > ".join(filter(None, (row["source_section"], row["summary_title"]))),
                 citation=Citation(
                     source=SourceName.RTS,
                     id=opaque_id(SourceName.RTS, row["filename"], row["created_at"], row["page_no"], row["chunk_id"]),

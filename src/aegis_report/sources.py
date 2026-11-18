@@ -85,6 +85,8 @@ class Passage(StrictModel):
     distance: float | None = None
     speaker: str | None = None
     relevance: float | None = None
+    heading: str | None = None
+    terms: tuple[str, ...] = ()
     citation: Citation
 
 

@@ -66,11 +66,17 @@ class Reports:
             if patch.op == "add_section" and len(sections) >= 6:
                 raise HTTPException(422, "section_limit")
             sections[patch.section.id] = patch.section
-            spec = ReportSpec(title=spec.title, sections=list(sections.values()))
-            return conn.execute("""
-                UPDATE rpt.drafts SET spec = %s, revision = revision + 1 WHERE id = %s AND owner_key = %s
-                RETURNING id, report_id, base_version, head_at_start, revision, spec
-            """, (Jsonb(spec.model_dump(mode="json")), draft_id, owner)).fetchone()
+            try:
+                spec = ReportSpec(title=spec.title, sections=list(sections.values()))
+            except ValueError as exc:
+                raise HTTPException(422, "invalid_report_scope") from exc
+            return self._write_draft(conn, owner, draft_id, spec)
+
+    def _write_draft(self, conn, owner, draft_id, spec):
+        return conn.execute("""
+            UPDATE rpt.drafts SET spec = %s, revision = revision + 1 WHERE id = %s AND owner_key = %s
+            RETURNING id, report_id, base_version, head_at_start, revision, spec
+        """, (Jsonb(spec.model_dump(mode="json")), draft_id, owner)).fetchone()
 
     def list_reports(self, owner: bytes, archived: bool, limit: int, offset: int):
         with connect(self.dsn) as conn:
@@ -283,6 +289,15 @@ class Reports:
                 raise HTTPException(404, "schedule_not_found")
             return schedule
 
+    def schedule_history(self, owner: bytes, report_id: UUID, limit: int, offset: int):
+        with connect(self.dsn) as conn:
+            self._report(conn, owner, report_id)
+            return conn.execute("""
+                SELECT id, period, version, schedule_revision, state, error_code, created_at
+                FROM rpt.runs WHERE owner_key = %s AND report_id = %s AND schedule_revision IS NOT NULL
+                ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s
+            """, (owner, report_id, limit, offset)).fetchall()
+
     def put_schedule(self, owner: bytes, report_id: UUID, request: ScheduleWrite):
         with connect(self.dsn) as conn:
             self._report(conn, owner, report_id, active=True, lock=True)
@@ -317,31 +332,34 @@ class Reports:
     def enqueue_preview(self, owner: bytes, draft_id: UUID, request: PreviewRequest):
         with connect(self.dsn) as conn:
             draft = self._draft(conn, owner, draft_id)
-            self._assert_revision(draft, request.revision)
-            period = request.period.model_dump(mode="json")
-            if request.baseline_run_id is not None:
-                baseline = self._run(conn, owner, request.baseline_run_id)
-                if (
-                    baseline["mode"] != "generate" or baseline["state"] != "succeeded"
-                    or (baseline["report_id"], baseline["version"]) != (draft["report_id"], draft["base_version"])
-                    or baseline["period"] != period
-                ):
-                    raise HTTPException(409, "baseline_must_match_saved_version_and_period")
-            spec = ReportSpec.model_validate(draft["spec"])
-            if request.section_id is not None:
-                selected = [section for section in spec.sections if section.id == request.section_id]
-                if not selected:
-                    raise HTTPException(404, "section_not_found")
-                if request.stop_after is not None and selected[0].mode != "staged":
-                    raise HTTPException(422, "gather_only_requires_staged_section")
-                spec = ReportSpec(title=spec.title, sections=selected)
-            return conn.execute("""
-                INSERT INTO rpt.runs
-                    (id, owner_key, mode, draft_revision, preview_section_id, baseline_id, period, spec, stop_after, expires_at)
-                VALUES (%s, %s, 'preview', %s, %s, %s, %s, %s, %s, now() + %s)
-                RETURNING id
-            """, (uuid4(), owner, draft["revision"], request.section_id, request.baseline_run_id, Jsonb(period),
-                  Jsonb(spec.model_dump(mode="json")), request.stop_after, self.preview_retention)).fetchone()
+            return self._insert_preview(conn, owner, draft, request)
+
+    def _insert_preview(self, conn, owner, draft, request, *, proposed_spec=None):
+        self._assert_revision(draft, request.revision)
+        period = request.period.model_dump(mode="json")
+        if request.baseline_run_id is not None:
+            baseline = self._run(conn, owner, request.baseline_run_id)
+            if (
+                baseline["mode"] != "generate" or baseline["state"] != "succeeded"
+                or (baseline["report_id"], baseline["version"]) != (draft["report_id"], draft["base_version"])
+                or baseline["period"] != period
+            ):
+                raise HTTPException(409, "baseline_must_match_saved_version_and_period")
+        spec = proposed_spec or ReportSpec.model_validate(draft["spec"])
+        if request.section_id is not None:
+            selected = [section for section in spec.sections if section.id == request.section_id]
+            if not selected:
+                raise HTTPException(404, "section_not_found")
+            if request.stop_after is not None and selected[0].mode != "staged":
+                raise HTTPException(422, "gather_only_requires_staged_section")
+            spec = ReportSpec(title=spec.title, sections=selected)
+        return conn.execute("""
+            INSERT INTO rpt.runs
+                (id, owner_key, mode, draft_revision, preview_section_id, baseline_id, period, spec, stop_after, expires_at)
+            VALUES (%s, %s, 'preview', %s, %s, %s, %s, %s, %s, now() + %s)
+            RETURNING id
+        """, (uuid4(), owner, draft["revision"], request.section_id, request.baseline_run_id, Jsonb(period),
+              Jsonb(spec.model_dump(mode="json")), request.stop_after, self.preview_retention)).fetchone()
 
     def output(self, owner: bytes, run_id: UUID):
         row = self.get_run(owner, run_id)

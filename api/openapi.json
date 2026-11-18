@@ -1,6 +1,26 @@
 {
   "components": {
     "schemas": {
+      "AppliedProposal": {
+        "additionalProperties": false,
+        "properties": {
+          "draft_id": {
+            "format": "uuid",
+            "title": "Draft Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "draft_id",
+          "revision"
+        ],
+        "title": "AppliedProposal",
+        "type": "object"
+      },
       "BankResponse": {
         "additionalProperties": false,
         "properties": {
@@ -31,6 +51,57 @@
           "aliases"
         ],
         "title": "BankResponse",
+        "type": "object"
+      },
+      "BanksEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "banks": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 10,
+                  "pattern": "^[A-Z0-9.]+-[A-Z]{2}$",
+                  "type": "string"
+                },
+                "maxItems": 12,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Banks"
+          },
+          "op": {
+            "const": "set_banks",
+            "title": "Op",
+            "type": "string"
+          },
+          "peer_group": {
+            "anyOf": [
+              {
+                "const": "big-6-canadian-banks",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Peer Group"
+          },
+          "section_id": {
+            "pattern": "^[a-z][a-z0-9_-]{0,39}$",
+            "title": "Section Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "section_id",
+          "op"
+        ],
+        "title": "BanksEdit",
         "type": "object"
       },
       "BenchmarkFact": {
@@ -221,6 +292,74 @@
         "title": "CalculationOutput",
         "type": "object"
       },
+      "ChatProposal": {
+        "additionalProperties": false,
+        "properties": {
+          "operations": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "add_section": "#/components/schemas/SectionPut",
+                  "remove_section": "#/components/schemas/SectionRemove",
+                  "reorder_sections": "#/components/schemas/SectionReorder",
+                  "replace_section": "#/components/schemas/SectionPut",
+                  "set_banks": "#/components/schemas/BanksEdit",
+                  "set_instruction": "#/components/schemas/InstructionEdit",
+                  "set_mode": "#/components/schemas/ModeEdit",
+                  "set_output_format": "#/components/schemas/FormatEdit",
+                  "set_sources": "#/components/schemas/SourcesEdit",
+                  "set_time": "#/components/schemas/TimeEdit"
+                },
+                "propertyName": "op"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/SectionPut"
+                },
+                {
+                  "$ref": "#/components/schemas/SectionRemove"
+                },
+                {
+                  "$ref": "#/components/schemas/SectionReorder"
+                },
+                {
+                  "$ref": "#/components/schemas/BanksEdit"
+                },
+                {
+                  "$ref": "#/components/schemas/TimeEdit"
+                },
+                {
+                  "$ref": "#/components/schemas/SourcesEdit"
+                },
+                {
+                  "$ref": "#/components/schemas/ModeEdit"
+                },
+                {
+                  "$ref": "#/components/schemas/FormatEdit"
+                },
+                {
+                  "$ref": "#/components/schemas/InstructionEdit"
+                }
+              ]
+            },
+            "maxItems": 6,
+            "minItems": 1,
+            "title": "Operations",
+            "type": "array"
+          },
+          "revision": {
+            "minimum": 1.0,
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "operations"
+        ],
+        "title": "ChatProposal",
+        "type": "object"
+      },
       "Citation": {
         "additionalProperties": false,
         "properties": {
@@ -385,6 +524,50 @@
           "stages"
         ],
         "title": "CompiledSection",
+        "type": "object"
+      },
+      "Conversation": {
+        "additionalProperties": false,
+        "properties": {
+          "draft_id": {
+            "format": "uuid",
+            "title": "Draft Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "period": {
+            "$ref": "#/components/schemas/Period"
+          }
+        },
+        "required": [
+          "draft_id",
+          "period",
+          "id"
+        ],
+        "title": "Conversation",
+        "type": "object"
+      },
+      "ConversationCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "draft_id": {
+            "format": "uuid",
+            "title": "Draft Id",
+            "type": "string"
+          },
+          "period": {
+            "$ref": "#/components/schemas/Period"
+          }
+        },
+        "required": [
+          "draft_id",
+          "period"
+        ],
+        "title": "ConversationCreate",
         "type": "object"
       },
       "DetailChange": {
@@ -798,6 +981,37 @@
         "title": "FieldChange",
         "type": "object"
       },
+      "FormatEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "op": {
+            "const": "set_output_format",
+            "title": "Op",
+            "type": "string"
+          },
+          "output_format": {
+            "enum": [
+              "table",
+              "table_with_note",
+              "themes"
+            ],
+            "title": "Output Format",
+            "type": "string"
+          },
+          "section_id": {
+            "pattern": "^[a-z][a-z0-9_-]{0,39}$",
+            "title": "Section Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "section_id",
+          "op",
+          "output_format"
+        ],
+        "title": "FormatEdit",
+        "type": "object"
+      },
       "FormatOutput": {
         "additionalProperties": false,
         "properties": {
@@ -900,6 +1114,64 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "InstructionEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "instruction": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Instruction",
+            "type": "string"
+          },
+          "op": {
+            "const": "set_instruction",
+            "title": "Op",
+            "type": "string"
+          },
+          "section_id": {
+            "pattern": "^[a-z][a-z0-9_-]{0,39}$",
+            "title": "Section Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "section_id",
+          "op",
+          "instruction"
+        ],
+        "title": "InstructionEdit",
+        "type": "object"
+      },
+      "ModeEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "enum": [
+              "one_step",
+              "staged"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "op": {
+            "const": "set_mode",
+            "title": "Op",
+            "type": "string"
+          },
+          "section_id": {
+            "pattern": "^[a-z][a-z0-9_-]{0,39}$",
+            "title": "Section Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "section_id",
+          "op",
+          "mode"
+        ],
+        "title": "ModeEdit",
         "type": "object"
       },
       "Note": {
@@ -1130,6 +1402,17 @@
               }
             ],
             "title": "Currency"
+          },
+          "currency_confirmed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency Confirmed"
           },
           "high": {
             "anyOf": [
@@ -1828,6 +2111,65 @@
         "title": "ScheduleWrite",
         "type": "object"
       },
+      "ScheduledRun": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "period": {
+            "$ref": "#/components/schemas/Period"
+          },
+          "schedule_revision": {
+            "title": "Schedule Revision",
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "waiting",
+              "running",
+              "succeeded",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "period",
+          "version",
+          "schedule_revision",
+          "state",
+          "error_code",
+          "created_at"
+        ],
+        "title": "ScheduledRun",
+        "type": "object"
+      },
       "SectionBlocks": {
         "additionalProperties": false,
         "properties": {
@@ -1886,6 +2228,75 @@
           "comparison"
         ],
         "title": "SectionBlocks",
+        "type": "object"
+      },
+      "SectionPut": {
+        "additionalProperties": false,
+        "properties": {
+          "op": {
+            "enum": [
+              "add_section",
+              "replace_section"
+            ],
+            "title": "Op",
+            "type": "string"
+          },
+          "section": {
+            "$ref": "#/components/schemas/SectionSpec"
+          }
+        },
+        "required": [
+          "op",
+          "section"
+        ],
+        "title": "SectionPut",
+        "type": "object"
+      },
+      "SectionRemove": {
+        "additionalProperties": false,
+        "properties": {
+          "op": {
+            "const": "remove_section",
+            "title": "Op",
+            "type": "string"
+          },
+          "section_id": {
+            "pattern": "^[a-z][a-z0-9_-]{0,39}$",
+            "title": "Section Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "op",
+          "section_id"
+        ],
+        "title": "SectionRemove",
+        "type": "object"
+      },
+      "SectionReorder": {
+        "additionalProperties": false,
+        "properties": {
+          "op": {
+            "const": "reorder_sections",
+            "title": "Op",
+            "type": "string"
+          },
+          "section_ids": {
+            "items": {
+              "pattern": "^[a-z][a-z0-9_-]{0,39}$",
+              "type": "string"
+            },
+            "maxItems": 6,
+            "minItems": 1,
+            "title": "Section Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "op",
+          "section_ids"
+        ],
+        "title": "SectionReorder",
         "type": "object"
       },
       "SectionResult": {
@@ -2240,6 +2651,47 @@
         "title": "SourceProbeResponse",
         "type": "object"
       },
+      "SourcesEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "op": {
+            "const": "set_sources",
+            "title": "Op",
+            "type": "string"
+          },
+          "section_id": {
+            "pattern": "^[a-z][a-z0-9_-]{0,39}$",
+            "title": "Section Id",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/BenchmarkInput"
+                },
+                {
+                  "$ref": "#/components/schemas/EarningsInput"
+                },
+                {
+                  "$ref": "#/components/schemas/DocumentInput"
+                }
+              ]
+            },
+            "maxItems": 4,
+            "minItems": 1,
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "section_id",
+          "op",
+          "sources"
+        ],
+        "title": "SourcesEdit",
+        "type": "object"
+      },
       "Stage": {
         "additionalProperties": false,
         "properties": {
@@ -2398,6 +2850,31 @@
         "title": "ThemeClaim",
         "type": "object"
       },
+      "TimeEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "op": {
+            "const": "set_time",
+            "title": "Op",
+            "type": "string"
+          },
+          "section_id": {
+            "pattern": "^[a-z][a-z0-9_-]{0,39}$",
+            "title": "Section Id",
+            "type": "string"
+          },
+          "time": {
+            "$ref": "#/components/schemas/TimeScope"
+          }
+        },
+        "required": [
+          "section_id",
+          "op",
+          "time"
+        ],
+        "title": "TimeEdit",
+        "type": "object"
+      },
       "TimeScope": {
         "additionalProperties": false,
         "properties": {
@@ -2465,6 +2942,122 @@
           }
         },
         "title": "TimeScope",
+        "type": "object"
+      },
+      "TurnCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "request_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Request Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "request_key"
+        ],
+        "title": "TurnCreate",
+        "type": "object"
+      },
+      "TurnResult": {
+        "additionalProperties": false,
+        "properties": {
+          "applied_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied Revision"
+          },
+          "conversation_id": {
+            "format": "uuid",
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_sequence": {
+            "title": "Last Sequence",
+            "type": "integer"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "preview_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview Id"
+          },
+          "proposal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatProposal"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "conversation_id",
+          "state",
+          "last_sequence"
+        ],
+        "title": "TurnResult",
         "type": "object"
       },
       "ValidationError": {
@@ -2589,6 +3182,346 @@
           }
         ],
         "summary": "Banks"
+      }
+    },
+    "/v1/conversations": {
+      "post": {
+        "operationId": "new_conversation_v1_conversations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Conversation"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "New Conversation"
+      }
+    },
+    "/v1/conversations/{conversation_id}/turns": {
+      "post": {
+        "operationId": "new_turn_v1_conversations__conversation_id__turns_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TurnCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TurnResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "New Turn"
+      }
+    },
+    "/v1/conversations/{conversation_id}/turns/{turn_id}": {
+      "get": {
+        "operationId": "read_turn_v1_conversations__conversation_id__turns__turn_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "turn_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Turn Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TurnResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read Turn"
+      }
+    },
+    "/v1/conversations/{conversation_id}/turns/{turn_id}/accept": {
+      "post": {
+        "operationId": "accept_proposal_v1_conversations__conversation_id__turns__turn_id__accept_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "turn_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Turn Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftEdit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliedProposal"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Accept Proposal"
+      }
+    },
+    "/v1/conversations/{conversation_id}/turns/{turn_id}/cancel": {
+      "post": {
+        "operationId": "cancel_turn_v1_conversations__conversation_id__turns__turn_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "turn_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Turn Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TurnResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Cancel Turn"
+      }
+    },
+    "/v1/conversations/{conversation_id}/turns/{turn_id}/events": {
+      "get": {
+        "operationId": "turn_events_v1_conversations__conversation_id__turns__turn_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "turn_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Turn Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "last-event-id",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 2147483647,
+              "minimum": 0,
+              "title": "Last-Event-Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Turn Events"
       }
     },
     "/v1/drafts": {
@@ -3402,6 +4335,78 @@
           }
         ],
         "summary": "Enqueue Schedule"
+      }
+    },
+    "/v1/reports/{report_id}/schedule/runs": {
+      "get": {
+        "operationId": "schedule_runs_v1_reports__report_id__schedule_runs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "report_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Report Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ScheduledRun"
+                  },
+                  "title": "Response Schedule Runs V1 Reports  Report Id  Schedule Runs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Schedule Runs"
       }
     },
     "/v1/reports/{report_id}/versions": {

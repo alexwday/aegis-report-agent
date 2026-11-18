@@ -115,7 +115,9 @@ class RtsSource:
                        to_tsvector('english', body) AS content,
                        CASE WHEN lower(coalesce(source_section, '') || ' ' || coalesce(summary_title, ''))
                              ~ 'glossary|endnotes?|footnotes?|notes to (the )?(consolidated )?financial|non.gaap|forward.looking|disclaimer'
-                            THEN 0.12 ELSE 1 END AS section_weight
+                            THEN 0.12
+                            WHEN coalesce(source_section, '') ~* 'md[[:space:]]*&[[:space:]]*a|management.s discussion'
+                            THEN 1.4 ELSE 1 END AS section_weight
                 FROM clean
                 WHERE body ~ '[[:alpha:]]' AND body !~* '^[[:space:]]*(page|footer|header)[[:space:]:#-]*[0-9[:space:]|/-]+$'
             ), ranked AS (
@@ -124,13 +126,16 @@ class RtsSource:
                             + least(2.0, ts_rank_cd(content, term, 0) * 8)
                                 * least(1.0, char_length(body) / 220.0)
                         ) FROM terms), 0) * section_weight AS rank,
-                       EXISTS (SELECT 1 FROM terms WHERE heading @@ term) AS heading_match
+                       EXISTS (
+                           SELECT 1 FROM terms WHERE heading @@ term
+                             AND (numnode(term) > 1 OR (summary @@ term AND char_length(body) >= 35))
+                       ) AS heading_match
                 FROM fields
             ), eligible AS (
                 SELECT *, rank + CASE WHEN distance IS NULL THEN 0
                     ELSE greatest(0, %s - distance) * 0.2 END AS score
                 FROM ranked
-                WHERE (char_length(body) >= 75 OR (heading_match AND section_weight = 1))
+                WHERE (char_length(body) >= 75 OR (heading_match AND section_weight >= 1))
                   AND (rank > 0 OR distance <= %s OR %s)
             ), pages AS (
                 SELECT *, row_number() OVER (

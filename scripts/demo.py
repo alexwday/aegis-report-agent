@@ -199,6 +199,44 @@ def demonstrate_automatic(client, settings: Settings, saved: dict, show=print, p
     return result
 
 
+def demonstrate_chat(client, wait=wait_for_run, show=print):
+    draft = submit(client, "POST", "/v1/drafts", {"bank": "SYN1"})
+    dpath = f"/v1/drafts/{draft['id']}"
+    saved = submit(client, "POST", f"{dpath}/save", {"revision": draft["revision"]})
+    baseline = submit(client, "POST", f"/v1/reports/{saved['report_id']}/runs", {
+        "version": saved["version"], "period": Q2, "request_key": f"{uuid4().hex}-chat",
+    })
+    wait(client, baseline["id"])
+    convo = submit(client, "POST", "/v1/conversations", {"draft_id": draft["id"], "period": Q2})
+    cpath = f"/v1/conversations/{convo['id']}/turns"
+    request = "Add an Efficiency Ratio section for SYN1-CA and SYN2-CA and preview against the saved version."
+    turn = submit(client, "POST", cpath, {"message": request, "request_key": "peer-section"})
+    tpath = f"{cpath}/{turn['id']}"
+    with client.stream("GET", f"{tpath}/events", headers={"Last-Event-ID": str(turn["last_sequence"])}) as stream:
+        stream.raise_for_status()
+        events = [line.removeprefix("event: ") for line in stream.iter_lines() if line.startswith("event: ")]
+    turn = submit(client, "GET", tpath)
+    assert turn["state"] == "succeeded" and "patch_proposed" in events and "preview_queued" in events
+    show(f"Chat request: {request}")
+    show("  Resumed events: " + ", ".join(events))
+    show(f"  Proposal at revision {turn['proposal']['revision']}; draft revision before acceptance is "
+         f"{submit(client, 'GET', dpath)['revision']}.")
+    wait(client, turn["preview_id"])
+    result = submit(client, "GET", f"/v1/runs/{turn['preview_id']}/output.json")
+    peer = result["sections"][1]["peers"][0]
+    assert peer["reason"] is None and peer["median"] == "47.7"
+    show(f"  Preview FY2090 Q2 peer median: {peer['median']} {peer['unit']}.")
+    for row in peer["ranks"]:
+        show(f"    #{row['rank']} {row['bank']}: {row['value']} {peer['unit']}")
+    accepted = submit(client, "POST", f"{tpath}/accept", {"revision": turn["proposal"]["revision"]})
+    show(f"  Accepted at draft revision {accepted['revision']}.")
+    assert result["diff"]["added"] == ["efficiency-ratio"]
+    show(f"  Diff against saved v1 adds {', '.join(result['diff']['added'])}.")
+    delivery = submit(client, "POST", f"{dpath}/save", {"revision": accepted["revision"]})
+    assert delivery["version"] == 2
+    show(f"  Saved report version {delivery['version']} explicitly.")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("base_url", nargs="?", default="http://127.0.0.1:8000")
@@ -212,6 +250,7 @@ def main():
         delivery = demonstrate(client)
         if settings:
             demonstrate_automatic(client, settings, delivery["saved"], pdf_output=args.pdf_output)
+            demonstrate_chat(client)
 
 
 if __name__ == "__main__":

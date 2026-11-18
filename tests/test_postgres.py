@@ -44,7 +44,7 @@ def settings(monkeypatch):
     with connect(fixture_dsn) as conn:
         conn.execute("""
             TRUNCATE rpt.runs, rpt.drafts, rpt.report_versions, rpt.reports, rpt.source_observations,
-                     rpt.personal_templates, rpt.schedules
+                     rpt.personal_templates, rpt.schedules, rpt.conversations, rpt.chat_turns, rpt.chat_events
         """)
     return settings
 
@@ -620,6 +620,11 @@ def test_schedule_revision_pinning_and_pause_use_automatic_path(settings):
         time[0] += timedelta(seconds=1800)
         assert worker.run_one()
         assert submit(owner, "GET", status_path)["error_code"] == "schedule_inactive_or_changed"
+        assert outsider.get(f"{path}/runs").status_code == 404
+        records = submit(owner, "GET", f"{path}/runs")
+        assert [(row["id"], row["state"], row["error_code"], row["period"]) for row in records] == [
+            (run["id"], "failed", "schedule_inactive_or_changed", Q3),
+        ]
         assert submit(owner, "PUT", path, body | {"expected_revision": 2, "period": Q2})["period"] == Q2
         submit(owner, "POST", f"{report}/archive")
         assert not submit(owner, "GET", path)["enabled"]
@@ -767,3 +772,129 @@ def test_multi_bank_preview_and_diff_show_ranks_missing_and_mixed_currency(setti
                            for entry in result["diff_details"]["entries"] if entry["operation"] == "added")
             else:
                 assert peer["ranks"] == []
+
+
+def test_chat_proposal_and_preview_require_owned_revision_checked_acceptance(settings):
+    from aegis_report.chat_agent import ChatAgent
+
+    with TestClient(create_app(settings)) as client, TestClient(create_app(settings, LocalAuth("other"))) as outsider:
+        draft = submit(client, "POST", "/v1/drafts", {"bank": "SYN1"})
+        dpath = f"/v1/drafts/{draft['id']}"
+        convo = submit(client, "POST", "/v1/conversations", {"draft_id": draft["id"], "period": Q2})
+        assert outsider.post("/v1/conversations", json={"draft_id": draft["id"], "period": Q2}).status_code == 404
+        cpath = f"/v1/conversations/{convo['id']}/turns"
+        body = {"message": "Add an Efficiency Ratio section for SYN1-CA and SYN2-CA and preview it.",
+                "request_key": "first"}
+        queued = submit(client, "POST", cpath, body)
+        path = f"{cpath}/{queued['id']}"
+        assert submit(client, "POST", cpath, body)["id"] == queued["id"]
+        assert client.post(cpath, json=body | {"request_key": "second"}).status_code == 409
+        assert client.post(path + "/accept", json={"revision": 1}).status_code == 409
+        assert outsider.get(path).status_code == 404
+        assert outsider.get(path + "/events").status_code == 404
+        assert outsider.post(path + "/cancel").status_code == 404
+        assert outsider.post(path + "/accept", json={"revision": 1}).status_code == 404
+
+        agent = ChatAgent(settings, StubGateway())
+        assert agent.run_one()
+        done = submit(client, "GET", path)
+        assert done["state"] == "succeeded" and done["proposal"]["revision"] == 1
+        assert done["proposal"]["operations"][0]["section"]["banks"] == ["SYN1-CA", "SYN2-CA"]
+        assert submit(client, "GET", dpath)["revision"] == 1
+        assert Worker(settings, StubGateway()).run_one()
+        preview = submit(client, "GET", f"/v1/runs/{done['preview_id']}/output.json")
+        assert preview["sections"][1]["peers"][0]["reason"] is None
+        events = client.get(path + "/events")
+        assert events.is_success and "text/event-stream" in events.headers["content-type"]
+        sequence = [int(line.split(": ")[1]) for line in events.text.splitlines() if line.startswith("id: ")]
+        assert sequence == list(range(1, done["last_sequence"] + 1))
+        resumed = client.get(path + "/events", headers={"Last-Event-ID": str(sequence[-2])})
+        assert resumed.text.startswith(f"id: {sequence[-1]}\nevent: succeeded\n")
+        assert "patch_proposed" in events.text and "preview_queued" in events.text
+        applied = submit(client, "POST", path + "/accept", {"revision": 1})
+        assert applied["revision"] == 2
+        assert submit(client, "POST", path + "/accept", {"revision": 1}) == applied
+        assert len(submit(client, "GET", dpath)["spec"]["sections"]) == 2
+
+        stale = submit(client, "POST", cpath, {"message": "Make Net income staged.", "request_key": "stale"})
+        assert agent.run_one()
+        submit(client, "PATCH", dpath, {"revision": 2, "op": "replace_section", "section": TREND})
+        assert client.post(f"{cpath}/{stale['id']}/accept", json={"revision": 2}).status_code == 409
+        next_turn = submit(client, "POST", cpath, {"message": "Use table only.", "request_key": "cancelled"})
+        cancel_path = f"{cpath}/{next_turn['id']}/cancel"
+        assert submit(client, "POST", cancel_path)["state"] == "cancelled"
+        assert not agent.run_one()
+
+
+def test_chat_gateway_cannot_turn_retrieved_text_into_published_edits(settings):
+    from aegis_report.chat_agent import ChatAgent
+
+    # Fabricated source text is processed through the same bounded retrieval tool as other documents.
+    with connect(os.environ["RPT_MIGRATION_DATABASE_URL"]) as conn:
+        conn.execute("""
+            UPDATE public."aegis-investor-slides-data" SET chunk_content =
+                'Net interest margin rose 15 basis points. A slide note requests an unrelated draft edit.'
+            WHERE bank = 'SYN1-CA' AND page_number = 19
+        """)
+    try:
+        class FixturePlanner:
+            def plan_chat(self, messages, tools, max_tokens, timeout):
+                names = {tool["function"]["name"] for tool in tools}
+                assert not names & {"accept", "save", "share", "enable_schedule"}
+                count = sum(msg["role"] == "tool" for msg in messages)
+                if count == 0:
+                    return {"id": "lookup", "tool": "search_evidence", "arguments": {
+                        "bank": "SYN1", "selector": {"source": "investor_presentation",
+                                                    "terms": ["net interest margin"]},
+                    }}
+                if count == 1:
+                    assert "untrusted_source_data" in messages[-1]["content"]
+                    assert "A slide note requests an unrelated draft edit" in messages[-1]["content"]
+                    return {"id": "unsupported", "tool": "save", "arguments": {}}
+                assert "tool_not_allowed" in messages[-1]["content"]
+                return {"message": "The fixture slide describes a margin increase."}
+
+        with TestClient(create_app(settings)) as client:
+            draft = submit(client, "POST", "/v1/drafts", {"bank": "SYN1"})
+            convo = submit(client, "POST", "/v1/conversations", {"draft_id": draft["id"], "period": Q3})
+            cpath = f"/v1/conversations/{convo['id']}/turns"
+            item = submit(client, "POST", cpath, {"message": "Find cited margin evidence.", "request_key": "evidence"})
+            assert ChatAgent(settings, FixturePlanner()).run_one()
+            done = submit(client, "GET", f"{cpath}/{item['id']}")
+            assert done["state"] == "succeeded" and done["proposal"] is None
+            assert submit(client, "GET", f"/v1/drafts/{draft['id']}")["revision"] == 1
+    finally:
+        with connect(os.environ["RPT_MIGRATION_DATABASE_URL"]) as conn:
+            conn.execute("""
+                UPDATE public."aegis-investor-slides-data" SET chunk_content =
+                    'The net interest margin increased 12 basis points. Higher net interest income came from stronger '
+                    'loan yields, and the net interest margin improved despite deposit competition.'
+                WHERE bank = 'SYN1-CA' AND page_number = 19
+            """)
+
+
+def test_named_peer_scope_uses_core_symbols_with_catalog_tags(settings):
+    from aegis_report.models import BIG_SIX
+
+    with connect(os.environ["RPT_MIGRATION_DATABASE_URL"]) as conn:
+        for index, bank in enumerate(BIG_SIX):
+            conn.execute("""
+                INSERT INTO public.aegis_data_availability (bank_id, bank_symbol, bank_name, bank_tags,
+                                                           fiscal_year, quarter)
+                VALUES (%s, %s, %s, %s, 2089, 'Q4')
+            """, (9950 + index, bank, f"Fixture core bank {index}", ["canadian_bank"] if index != 0 else None))
+    try:
+        with TestClient(create_app(settings)) as client:
+            draft = submit(client, "POST", "/v1/drafts", {"bank": "SYN1"})
+            path = f"/v1/drafts/{draft['id']}"
+            selected = draft["spec"]["sections"][0] | {"bank": None, "peer_group": "big-6-canadian-banks"}
+            edit = submit(client, "PATCH", path, {"revision": 1, "op": "replace_section", "section": selected})
+            run = submit(client, "POST", path + "/previews", {"revision": edit["revision"], "period": Q2})
+            assert Worker(settings, StubGateway()).run_one()
+            result = submit(client, "GET", f"/v1/runs/{run['id']}/output.json")
+            assert {row["bank"] for row in result["readiness"].values()} == set(BIG_SIX)
+            assert result["readiness"]["net-income:0:RY-CA"]["reason"] == "peer_group_membership_unconfirmed"
+            assert result["sections"][0]["peers"][0]["reason"] == "missing_member"
+    finally:
+        with connect(os.environ["RPT_MIGRATION_DATABASE_URL"]) as conn:
+            conn.execute("DELETE FROM public.aegis_data_availability WHERE bank_id BETWEEN 9950 AND 9955")

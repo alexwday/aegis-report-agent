@@ -1,17 +1,21 @@
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime
+from time import monotonic, sleep
 from typing import Annotated, Literal
 from uuid import UUID
 
 import httpx
 import psycopg
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import Field
 
 from .auth import AuthProvider, CurrentUser, LocalAuth, UpstreamAuth
+from .chat_models import TERMINAL, Conversation, ConversationCreate, TurnCreate, TurnResult
+from .chat_store import ChatStore
 from .claims import ThemeClaim
 from .config import Settings
 from .db import connect
@@ -79,6 +83,11 @@ class DraftResponse(StrictModel):
     head_at_start: int | None = None
     revision: int
     spec: ReportSpec
+
+
+class AppliedProposal(StrictModel):
+    draft_id: UUID
+    revision: int
 
 
 class SavedVersion(StrictModel):
@@ -254,6 +263,16 @@ class ScheduleResponse(StrictModel):
     revision: int
 
 
+class ScheduledRun(StrictModel):
+    id: UUID
+    period: Period
+    version: int
+    schedule_revision: int
+    state: Literal["queued", "waiting", "running", "succeeded", "failed"]
+    error_code: str | None
+    created_at: datetime
+
+
 class CitationDetail(Citation):
     excerpt: str
 
@@ -269,6 +288,7 @@ def create_app(settings: Settings | None = None, auth_provider: AuthProvider | N
         with httpx.Client(trust_env=False) as client:
             application.state.settings = active
             application.state.reports = Reports(active.report_dsn, active.retention_days)
+            application.state.chat = ChatStore(application.state.reports)
             application.state.catalog = BankCatalog()
             application.state.sources = build_sources(active)
             if auth_provider:
@@ -361,6 +381,59 @@ def create_app(settings: Settings | None = None, auth_provider: AuthProvider | N
     def patch_draft(draft_id: UUID, body: DraftPatch, owner: OwnerKey, reports: Storage):
         return reports.patch(owner, draft_id, body)
 
+    @api.post("/v1/conversations", response_model=Conversation, status_code=201)
+    def new_conversation(body: ConversationCreate, owner: OwnerKey, request: Request):
+        return request.app.state.chat.create(owner, body)
+
+    @api.post("/v1/conversations/{conversation_id}/turns", response_model=TurnResult, status_code=202)
+    def new_turn(conversation_id: UUID, body: TurnCreate, owner: OwnerKey, request: Request):
+        return request.app.state.chat.post(owner, conversation_id, body)
+
+    turn_path = "/v1/conversations/{conversation_id}/turns/{turn_id}"
+
+    @api.get(turn_path, response_model=TurnResult)
+    def read_turn(conversation_id: UUID, turn_id: UUID, owner: OwnerKey, request: Request):
+        return request.app.state.chat.result(owner, conversation_id, turn_id)
+
+    @api.post(turn_path + "/cancel", response_model=TurnResult)
+    def cancel_turn(conversation_id: UUID, turn_id: UUID, owner: OwnerKey, request: Request):
+        return request.app.state.chat.cancel(owner, conversation_id, turn_id)
+
+    @api.post(turn_path + "/accept", response_model=AppliedProposal)
+    def accept_proposal(conversation_id: UUID, turn_id: UUID, body: DraftEdit, owner: OwnerKey, request: Request):
+        return request.app.state.chat.accept(owner, conversation_id, turn_id, body.revision)
+
+    @api.get(turn_path + "/events", response_class=StreamingResponse, responses={
+        200: {"content": {"text/event-stream": {"schema": {"type": "string"}}}},
+    })
+    def turn_events(
+        conversation_id: UUID, turn_id: UUID, owner: OwnerKey, request: Request,
+        last_event_id: Annotated[int, Header(ge=0, le=2_147_483_647)] = 0,
+    ):
+        chat = request.app.state.chat
+        turn = chat.result(owner, conversation_id, turn_id)
+        if last_event_id > turn.last_sequence:
+            raise HTTPException(409, "event_cursor_ahead_of_turn")
+
+        def stream():
+            cursor = last_event_id
+            timeout = monotonic() + 30
+            heartbeat = monotonic()
+            while monotonic() < timeout:
+                state, events = chat.events(owner, conversation_id, turn_id, cursor)
+                for event in events:
+                    cursor = event["sequence"]
+                    data = json.dumps(event["data"], separators=(",", ":"))
+                    yield f"id: {cursor}\nevent: {event['kind']}\ndata: {data}\n\n"
+                if state in TERMINAL:
+                    return
+                if monotonic() >= heartbeat:
+                    yield ": heartbeat\n\n"
+                    heartbeat = monotonic() + 10
+                sleep(0.25)
+
+        return StreamingResponse(stream(), media_type="text/event-stream", headers={"X-Accel-Buffering": "no"})
+
     @api.get("/v1/drafts/{draft_id}/stages", response_model=list[CompiledSection])
     def stages(draft_id: UUID, owner: OwnerKey, reports: Storage):
         spec = ReportSpec.model_validate(reports.get_draft(owner, draft_id)["spec"])
@@ -417,6 +490,13 @@ def create_app(settings: Settings | None = None, auth_provider: AuthProvider | N
     @api.get("/v1/reports/{report_id}/schedule", response_model=ScheduleResponse)
     def get_schedule(report_id: UUID, owner: OwnerKey, reports: Storage):
         return reports.get_schedule(owner, report_id)
+
+    @api.get("/v1/reports/{report_id}/schedule/runs", response_model=list[ScheduledRun])
+    def schedule_runs(
+        report_id: UUID, owner: OwnerKey, reports: Storage,
+        limit: Annotated[int, Query(ge=1, le=100)] = 20, offset: Annotated[int, Query(ge=0)] = 0,
+    ):
+        return reports.schedule_history(owner, report_id, limit, offset)
 
     @api.put("/v1/reports/{report_id}/schedule", response_model=ScheduleResponse)
     def put_schedule(report_id: UUID, body: ScheduleWrite, owner: OwnerKey, reports: Storage):

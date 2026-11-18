@@ -52,6 +52,7 @@ def generate_section(
     rows = [item for item in evidence if isinstance(item, BenchmarkFact)]
     passages = [item for item in evidence if isinstance(item, Passage)]
     row_data = [row.model_dump(mode="json") for row in rows]
+    multi_bank = len(section.bank_symbols()) > 1
     output = {
         "id": section.id, "title": section.title, "mode": section.mode,
         "resolved_periods": [quarter.shifted(offset).model_dump() for offset in section.time.resolved_offsets()],
@@ -66,14 +67,15 @@ def generate_section(
                 break
         elif stage.kind is StageKind.CALCULATE:
             offset = section.time.comparison_offset()
-            comparisons = changes_for(rows, quarter, offset) if offset is not None else []
+            comparisons = changes_for(rows, quarter, offset, multi_bank=multi_bank) if offset is not None else []
             peers = peer_statistics(section, quarter, rows)
             if trace:
                 stages.append({"kind": stage.kind, "comparisons": comparisons, "peers": peers})
         elif stage.kind is StageKind.DRAFT:
             if section.kind in ("themes", "highlights"):
-                claims = [claim.model_dump(mode="json") for claim in draft_themes(section.instruction, passages, gateway)]
-                if len(section.bank_symbols()) > 1:
+                claims = [claim.model_dump(mode="json", exclude_none=True)
+                          for claim in draft_themes(section.instruction, passages, gateway)]
+                if multi_bank:
                     banks_by_id = {passage.citation.id: passage.bank for passage in passages}
                     for claim in claims:
                         claim["banks"] = sorted({banks_by_id[id_] for id_ in claim["evidence_ids"]})
@@ -97,7 +99,7 @@ def generate_section(
     return output | blocks | {"stage_outputs": stages}
 
 
-def changes_for(rows: list[BenchmarkFact], quarter: Period, offset: int) -> list[dict]:
+def changes_for(rows: list[BenchmarkFact], quarter: Period, offset: int, *, multi_bank: bool = False) -> list[dict]:
     older = quarter.shifted(offset)
 
     def key(row):
@@ -112,10 +114,11 @@ def changes_for(rows: list[BenchmarkFact], quarter: Period, offset: int) -> list
             usable_vendor = primary.change_basis != "unknown" and vendor is not None and vendor.is_finite()
             value = vendor if usable_vendor else compute_change(primary, baseline)
             origin = {-1: "vendor_qoq", -4: "vendor_yoy"}[offset] if usable_vendor else "rounded_actuals"
-            comparisons.append({
+            bank_scope = {"bank": primary.bank} if multi_bank else {}
+            comparisons.append(bank_scope | {
                 "value": str(value) if value is not None else None,
                 "basis": primary.change_basis, "metric": primary.metric, "segment": primary.segment,
-                "offset": offset, "bank": primary.bank, "citation_ids": [primary.citation.id, baseline.citation.id],
+                "offset": offset, "citation_ids": [primary.citation.id, baseline.citation.id],
                 "provenance": origin if value is not None else None,
             })
     return comparisons

@@ -43,11 +43,8 @@ def report_diff(baseline: dict, preview: dict) -> tuple[dict, DiffDetails]:
             ("peer", "peers", lambda peer: row_key(peer | {"bank": "Peers"})),
             ("comparison", "comparisons", comparison_key),
         ):
-            old_items = old.get(field) or []
-            new_items = new.get(field) or []
-            if field == "note":
-                old_items = [old_items] if old_items else []
-                new_items = [new_items] if new_items else []
+            old_items = items_for(field, old)
+            new_items = items_for(field, new)
             changes.extend(compare_items(section_id, entity, old_items, new_items, identity))
 
     # Match section headings/order without duplicating the nested rows or claims already compared.
@@ -64,6 +61,19 @@ def report_diff(baseline: dict, preview: dict) -> tuple[dict, DiffDetails]:
 
 def compared(section: dict) -> dict:
     return {"mode": "one_step", "peers": []} | {key: value for key, value in section.items() if key != "stage_outputs"}
+
+
+def items_for(field, section):
+    value = section.get(field)
+    if not value:
+        return []
+    if field == "note":
+        return [value]
+    if field == "comparisons":
+        banks = {row["bank"] for row in section.get("rows", [])}
+        if len(banks) == 1:
+            return [{"bank": next(iter(banks))} | item for item in value]
+    return value
 
 
 def headings(sections):

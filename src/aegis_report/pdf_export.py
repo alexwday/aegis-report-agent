@@ -45,7 +45,8 @@ def report_citations(result: dict) -> dict[str, dict]:
 
 
 def comparison_text(change: dict) -> str:
-    metric = f"{change['metric']} " if change.get("metric") else ""
+    name = " · ".join(filter(None, (change.get("bank"), change.get("metric"))))
+    metric = f"{name} " if name else ""
     if change["value"] is None:
         return f"{metric}change unavailable"
     count = abs(change["offset"])
@@ -84,9 +85,10 @@ def render_pdf(result: dict) -> bytes:
     def paragraph(value, style="body", ids=()):
         return Paragraph(text(value) + (f"  {references(ids)}" if ids else ""), styles[style])
 
+    period = str(Period.model_validate(result["period"]))
     parts = [
         paragraph(result["title"], "title"),
-        paragraph(f"{Period.model_validate(result['period'])}  ·  Vendor fiscal labels", "meta"),
+        paragraph(f"{period}  ·  Vendor fiscal labels", "meta"),
     ]
     unconfirmed = sum(entry["state"] != "ready" or entry.get("data_stability") != "stable"
                       for entry in result.get("readiness", {}).values())
@@ -124,7 +126,8 @@ def render_pdf(result: dict) -> bytes:
         if note:
             parts.append(paragraph(note["text"], ids=[note["citation_id"]]))
         for claim in section.get("claims", []):
-            parts.append(paragraph(f"{claim['topic']} · {claim['text']}", ids=claim["evidence_ids"]))
+            label = " · ".join((claim["topic"], *claim.get("banks", []))) if claim.get("banks") else claim["topic"]
+            parts.append(paragraph(f"{label} · {claim['text']}", ids=claim["evidence_ids"]))
         if not section["rows"] and not section.get("claims"):
             parts.append(paragraph("No cited evidence matched this section.", "meta"))
 
@@ -140,8 +143,17 @@ def render_pdf(result: dict) -> bytes:
         else:
             parts.extend(footnotes)
 
-    def footer(canvas, doc):
+    def decorate_page(canvas, doc):
         canvas.saveState()
+        canvas.setFillColor(MUTED)
+        canvas.setFont("ReportSans", 8)
+        heading = " ".join(result["title"].split())
+        while pdfmetrics.stringWidth(heading, "ReportSans", 8) > CONTENT_WIDTH - 86:
+            heading = heading[:-2].rstrip("… ") + "…"
+        canvas.drawString(50, letter[1] - 31, heading)
+        canvas.drawRightString(letter[0] - 50, letter[1] - 31, period)
+        canvas.setStrokeColor(RULE)
+        canvas.line(50, letter[1] - 39, letter[0] - 50, letter[1] - 39)
         canvas.setStrokeColor(RULE)
         canvas.line(50, 39, letter[0] - 50, 39)
         canvas.setFillColor(MUTED)
@@ -155,5 +167,5 @@ def render_pdf(result: dict) -> bytes:
         output, pagesize=letter, leftMargin=50, rightMargin=50, topMargin=47, bottomMargin=53,
         title=str(result["title"]), author="Aegis Report Agent",
     )
-    doc.build(parts, onFirstPage=footer, onLaterPages=footer)
+    doc.build(parts, onFirstPage=decorate_page, onLaterPages=decorate_page)
     return output.getvalue()

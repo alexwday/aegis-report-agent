@@ -57,13 +57,13 @@ class InternalGateway:
     embedding_model: str
     credentials: CredentialProvider
 
-    def _post(self, path: str, body: dict):
+    def _post(self, path: str, body: dict, *, timeout: float = 10):
         try:
             response = self.client.post(
                 self.url.rstrip("/") + path,
                 headers=self.credentials(),
                 json=body,
-                timeout=httpx.Timeout(10, connect=5),
+                timeout=httpx.Timeout(timeout, connect=min(5, timeout)),
                 follow_redirects=False,
             )
             response.raise_for_status()
@@ -115,6 +115,37 @@ class InternalGateway:
             return json.loads(text)
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise GatewayError("invalid_model_output") from exc
+
+    def plan_chat(self, messages: list[dict], tools: list[dict], max_tokens: int, timeout: float) -> dict:
+        result = self._post("/chat/completions", {
+            "model": self.chat_model,
+            "messages": messages,
+            "tools": tools,
+            "parallel_tool_calls": False,
+            "max_tokens": max_tokens,
+        }, timeout=timeout)
+        try:
+            message = result["choices"][0]["message"]
+            calls = message.get("tool_calls") or []
+            if calls:
+                if len(calls) != 1:
+                    raise ValueError
+                call, = calls
+                id_, name, args = call["id"], call["function"]["name"], call["function"]["arguments"]
+                if not all(isinstance(field, str) for field in (id_, name, args)) or len(args) > 16000:
+                    raise ValueError
+                if not id_ or len(id_) > 128:
+                    raise ValueError
+                arguments = json.loads(args)
+                if not isinstance(arguments, dict):
+                    raise ValueError
+                return {"id": id_, "tool": name, "arguments": arguments}
+            text = message["content"]
+            if not isinstance(text, str) or not text.strip() or len(text) > 3000:
+                raise ValueError
+            return {"message": text}
+        except (KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:
+            raise GatewayError("invalid_chat_model_output") from exc
 
     def embed(self, text: str) -> list[float]:
         if self.embedding_model not in SUPPORTED_EMBEDDING_LABELS:

@@ -21,6 +21,7 @@ class PeerStatistics(StrictModel):
     basis: Literal["vendor_fiscal_label"]
     unit: str | None = None
     currency: str | None = None
+    currency_confirmed: bool | None = None
     reason: Literal["missing_member", "unknown_unit", "mixed_units", "unknown_currency", "mixed_currencies",
                     "mixed_change_basis"] | None = None
     high: str | None = None
@@ -51,7 +52,7 @@ def peer_statistics(section: SectionSpec, quarter: Period, rows: list[BenchmarkF
 def summarize_peers(selector, period, basis, rows, expected) -> PeerStatistics:
     result = PeerStatistics(metric=selector.metric, segment=selector.segment, period=period, basis=basis)
     units = {row.unit for row in rows}
-    currencies = {row.currency for row in rows}
+    currencies = {row.currency or row.peer_currency for row in rows}
     if len(rows) != expected:
         result.reason = "missing_member"
     elif None in units:
@@ -69,6 +70,7 @@ def summarize_peers(selector, period, basis, rows, expected) -> PeerStatistics:
         values = [row.actual for row in ordered]
         result.unit = next(iter(units))
         result.currency = next(iter(currencies))
+        result.currency_confirmed = all(row.currency_confirmed is True for row in rows)
         result.high, result.low, result.median = str(values[0]), str(values[-1]), str(median(values))
         rank = 0
         previous = None
@@ -85,4 +87,5 @@ def peer_text(peer: dict) -> str:
     if peer["reason"]:
         return f"{scope}: Peer comparison unavailable ({peer['reason'].replace('_', ' ')})."
     ranks = ", ".join(f"{row['bank']} #{row['rank']}" for row in peer["ranks"])
-    return f"{scope}: Peer high {peer['high']}, low {peer['low']}, median {peer['median']}. {ranks}."
+    currency = peer["currency"] + (" (unconfirmed)" if peer.get("currency_confirmed") is not True else "")
+    return f"{scope}: Peer high {peer['high']}, low {peer['low']}, median {peer['median']}. {ranks}. Currency scope {currency}."

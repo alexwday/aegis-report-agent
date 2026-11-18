@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 import json
 import re
 from collections import defaultdict
@@ -13,6 +12,7 @@ from typing import Literal, Protocol
 
 from psycopg import Connection
 from psycopg.rows import DictRow
+from pydantic import Field
 
 from .models import Period, SourceName, StrictModel
 
@@ -75,6 +75,7 @@ class BenchmarkFact(StrictModel):
     unit_source: Literal["kpi_metadata", "row", "unknown"] = "unknown"
     currency: str | None
     currency_confirmed: bool | None
+    peer_currency: str | None = Field(default=None, exclude=True)
     raw_qoq: Decimal | None
     raw_yoy: Decimal | None
     change_basis: ChangeBasis
@@ -228,7 +229,8 @@ class BenchmarkingSource:
             basis = "unknown"
         else:
             basis = "percent_change"
-        currency = (self.currencies.get(scope.bank.symbol) or self.currencies.get(country)) if unit == "millions" else None
+        peer_currency = self.currencies.get(scope.bank.symbol) or self.currencies.get(country)
+        currency = peer_currency if unit == "millions" else None
         citation = Citation(
             id=opaque_id("benchmarking", row["filepath"], row["updated_at"], scope.bank.symbol,
                          str(scope.period), row["metric"], row["segment"]),
@@ -239,7 +241,7 @@ class BenchmarkingSource:
         return [BenchmarkFact(
             bank=scope.bank.symbol, period=scope.period, metric=row["metric"], segment=row["segment"],
             actual=row["actual"], unit=unit, unit_source=unit_source, currency=currency, currency_confirmed=False if currency else None,
-            raw_qoq=row["qoq"], raw_yoy=row["yoy"], change_basis=basis, citation=citation,
+            peer_currency=peer_currency, raw_qoq=row["qoq"], raw_yoy=row["yoy"], change_basis=basis, citation=citation,
         )]
 
     def anchors(self, conn: SourceConnection, scope: Scope) -> list[Citation]:

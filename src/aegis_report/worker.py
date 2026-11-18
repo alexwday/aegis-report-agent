@@ -10,6 +10,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from .auth import OwnerStatusChecker, UnwiredOwnerStatus
+from .chat_agent import ChatAgent
 from .claims import shortlist_passages
 from .config import Settings
 from .db import connect
@@ -314,11 +315,14 @@ def main(
     settings = Settings.from_env()
     logging.basicConfig(level=logging.INFO)
     with httpx.Client(trust_env=False) as client:
-        worker = Worker(settings, build_gateway(settings, client, credentials), owner_status)
+        gateway = build_gateway(settings, client, credentials)
+        worker = Worker(settings, gateway, owner_status)
+        chat = ChatAgent(settings, gateway)
         logger.info("Report worker started")
         while True:
             try:
-                busy = worker.run_one()
+                busy = chat.run_one()
+                busy = worker.run_one() or busy
             except psycopg.Error:
                 logger.warning("Database unavailable during worker attempt")
                 busy = False

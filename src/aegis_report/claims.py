@@ -30,9 +30,9 @@ WORD = re.compile(r"\b[\w'-]+\b")
 FOCUS_STOP = {"about", "from", "highlight", "show", "include", "identify", "quote", "claims", "topic", "the", "for",
               "report", "with", "cited", "evidence", "and", "financial", "context", "recent"}
 DOCUMENT_SOURCE = {SourceName.SLIDES, SourceName.RTS}
-DEFINITION_REQUEST = re.compile(r"\b(?:define|definitions?|what (?:is|does)|meaning of|glossary)\b", re.I)
+DEFINITION_REQUEST = re.compile(r"\b(?:define|definitions?|what is|what does .{1,60} mean|meaning of|glossary)\b", re.I)
 REFERENCE_HEADING = re.compile(
-    r"(?:^|[>:/–—-] ?)(?:[ #*_]*)(?:glossary|endnotes?|footnotes?|notes(?: to|$)|"
+    r"(?:^|[>:/–—-] ?)(?:[ #*_]*)(?:glossary|definitions?|endnotes?|footnotes?|notes(?: to|$)|"
     r"non.gaap|legal|forward.looking|disclaimer)\b", re.I,
 )
 DEFINITION_UNIT = re.compile(

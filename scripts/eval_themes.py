@@ -24,7 +24,7 @@ def main() -> None:
     dsn = os.environ.get("SOURCE_DATABASE_URL")
     if not dsn:
         parser.error("Set SOURCE_DATABASE_URL to a read-only DSN.")
-    with httpx.Client() as client, connect(dsn, source=True) as conn:
+    with httpx.Client(trust_env=False) as client, connect(dsn, source=True) as conn:
         try:
             gateway = evaluation_gateway(args.gateway, client)
         except ValueError as exc:

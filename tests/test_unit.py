@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -236,3 +237,40 @@ def test_candidate_window_is_bounded_diverse_and_ignores_operator_and_greetings(
     assert 40 <= len(selected) <= 50
     assert len({item.speaker for item in selected}) >= 40
     assert all("Thanks" not in item.text and "919" not in item.text for item in selected)
+
+
+def test_all_natural_language_chat_cases():
+    from eval_chat import CASES, evaluate_case
+
+    from aegis_report.gateway import StubGateway
+
+    cases = json.loads(CASES.read_text())
+    assert len(cases) >= 20
+    for case in cases:
+        assert evaluate_case(case, StubGateway()), case["request"]
+
+
+def test_chat_function_calls_keep_tool_data_in_tool_messages():
+    from time import monotonic
+
+    from aegis_report.chat_agent import run_model_turn
+
+    def upstream(request):
+        body = json.loads(request.content)
+        assert body["parallel_tool_calls"] is False
+        assert body["max_tokens"] <= 700
+        assert {tool["function"]["name"] for tool in body["tools"]} >= {"read_draft", "propose_patch"}
+        if body["messages"][-1]["role"] == "tool":
+            assert body["messages"][-1]["tool_call_id"] == "call_1"
+            assert json.loads(body["messages"][-1]["content"])["tool_data"] == {"revision": 1}
+            message = {"content": "Read revision one."}
+        else:
+            message = {"tool_calls": [{"id": "call_1", "function": {"name": "read_draft", "arguments": "{}"}}]}
+        return httpx.Response(200, json={"choices": [{"message": message}]})
+
+    with httpx.Client(transport=httpx.MockTransport(upstream)) as client:
+        gateway = InternalGateway(client, "https://model.example.invalid", "fixture-model",
+                                  "text-embedding-3-large", lambda: {})
+        assert run_model_turn(gateway, "Read the draft", [], lambda *_: {"revision": 1}, monotonic() + 3) == (
+            "Read revision one."
+        )

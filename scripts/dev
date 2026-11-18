@@ -21,7 +21,7 @@ trap 'exit 130' INT TERM
 
 uv sync --locked
 start_local_db
-export QUIET_SECONDS="${QUIET_SECONDS:-1}" WORKER_POLL_SECONDS="${WORKER_POLL_SECONDS:-0.15}"
+export WORKER_POLL_SECONDS="${WORKER_POLL_SECONDS:-0.15}"
 port="${AEGIS_DEV_PORT:-8000}"
 .venv/bin/python -m uvicorn aegis_report.api:app --host 127.0.0.1 --port "$port" --no-access-log > "$fixture_dir/api.log" 2>&1 &
 api_pid=$!

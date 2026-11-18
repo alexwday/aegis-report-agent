@@ -13,11 +13,13 @@ def generate_report(
         observations = facts[section.id]
         stages = compile_section(section)
         rows = [observations[offset] for offset in sorted(observations, reverse=True)]
-        primary = observations[0]
+        primary = observations.get(0)
         change, note = None, None
         for stage in stages:
             if stage.kind is StageKind.CALCULATE:
-                baseline = observations[section.time.compare_offset]
+                baseline = observations.get(section.time.compare_offset)
+                if primary is None or baseline is None:
+                    continue
                 value = compute_change(primary, baseline)
                 change = {
                     "value": str(value) if value is not None else None,
@@ -71,6 +73,16 @@ def render_html(result: dict) -> str:
         f"<title>{title}</title><main><h1>{title}</h1>",
         f"<p>{escape(str(Period.model_validate(result['period'])))} · Vendor fiscal labels</p>",
     ]
+    for key, observation in result.get("readiness", {}).items():
+        if observation.get("data_stability") != "stable" or observation["state"] != "ready":
+            scope = " · ".join(str(value) for value in (
+                observation.get("bank"), observation.get("source"),
+                str(Period.model_validate(observation["period"])) if observation.get("period") else None,
+            ) if value)
+            blocks.append(
+                f"<p>{escape(scope or key)}: {escape(observation['state'])}, "
+                f"stability {escape(observation.get('data_stability', 'unknown').replace('_', ' '))}.</p>"
+            )
     sources = {}
     for section in result["sections"]:
         blocks.extend([

@@ -8,8 +8,8 @@ from pydantic import ValidationError
 from aegis_report.auth import UpstreamAuth
 from aegis_report.gateway import GatewayError, InternalGateway, StubGateway
 from aegis_report.models import Period, SectionSpec, compile_section
+from aegis_report.readiness import observe
 from aegis_report.sources import Probe, Readiness
-from aegis_report.worker import observe
 
 
 def example_section():

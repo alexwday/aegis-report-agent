@@ -6,3 +6,5 @@
 - Page 6 — RBC-US is included in the 14 benchmarking banks. Three aggregate labels have NULL symbols.
 - Page 5 — Availability is unique on `(bank_id, fiscal_year, quarter)`. Alias and tag arrays can be NULL in individual periods.
 - Page 11 — Unified data tables use primary key `(file_id, chunk_id)`. Unified embedding tables use primary key `embedding_id`.
+
+The [R-002 catalog addendum](../collab/reviews/R-002.md#r-002-answers-q-015-to-q-018-and-exact-catalog-facts) gives the complete column ordinals, index column definitions and vendor filename identity rule. The source fixture v3 applies those definitions.

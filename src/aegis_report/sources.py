@@ -65,6 +65,7 @@ class BenchmarkFact(StrictModel):
     segment: str
     actual: Decimal | None
     unit: str | None
+    unit_source: Literal["kpi_metadata", "row", "unknown"] = "unknown"
     currency: str | None
     currency_confirmed: bool | None
     raw_qoq: Decimal | None
@@ -184,7 +185,10 @@ class BenchmarkingSource:
             return []
         row = rows[0]
         country = scope.bank.symbol.rsplit("-", 1)[-1]
-        unit = row["unit"]
+        metadata_unit = (row["unit"] or "").strip()
+        row_unit = (row["row_units"] or "").strip()
+        unit = metadata_unit or row_unit or None
+        unit_source = "kpi_metadata" if metadata_unit else "row" if row_unit else "unknown"
         if row["bps"] == "Yes":
             basis = "basis_points"
         elif (
@@ -204,7 +208,7 @@ class BenchmarkingSource:
         )
         return [BenchmarkFact(
             bank=scope.bank.symbol, period=scope.period, metric=row["metric"], segment=row["segment"],
-            actual=row["actual"], unit=unit, currency=currency, currency_confirmed=False if currency else None,
+            actual=row["actual"], unit=unit, unit_source=unit_source, currency=currency, currency_confirmed=False if currency else None,
             raw_qoq=row["qoq"], raw_yoy=row["yoy"], change_basis=basis, citation=citation,
         )]
 

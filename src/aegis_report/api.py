@@ -84,16 +84,22 @@ class RunReference(StrictModel):
 class Observation(Probe):
     since: datetime | None
     stable: bool
+    data_stability: Literal["stable", "recently_changed", "unknown"] = "unknown"
+    source: SourceName | None = None
+    period: Period | None = None
+    bank: str | None = None
+    required: bool = True
 
 
 class RunResponse(StrictModel):
     id: UUID
     mode: Literal["generate", "preview"]
+    trigger_kind: Literal["manual", "automatic"]
     report_id: UUID | None
     version: int | None
     draft_revision: int | None
     period: Period
-    state: Literal["queued", "waiting", "succeeded", "failed"]
+    state: Literal["queued", "waiting", "running", "succeeded", "failed"]
     error_code: str | None
     readiness: dict[str, Observation]
 
@@ -131,6 +137,7 @@ class Result(StrictModel):
     sections: list[SectionResult]
     diff: ReportDiff | None = None
     baseline_run_id: UUID | None = None
+    readiness: dict[str, Observation] = Field(default_factory=dict)
 
 
 class BankResponse(StrictModel):

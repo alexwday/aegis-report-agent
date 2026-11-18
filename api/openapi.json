@@ -128,6 +128,16 @@
               }
             ],
             "title": "Unit"
+          },
+          "unit_source": {
+            "default": "unknown",
+            "enum": [
+              "kpi_metadata",
+              "row",
+              "unknown"
+            ],
+            "title": "Unit Source",
+            "type": "string"
           }
         },
         "required": [
@@ -414,6 +424,27 @@
       "Observation": {
         "additionalProperties": false,
         "properties": {
+          "bank": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank"
+          },
+          "data_stability": {
+            "default": "unknown",
+            "enum": [
+              "stable",
+              "recently_changed",
+              "unknown"
+            ],
+            "title": "Data Stability",
+            "type": "string"
+          },
           "generation": {
             "anyOf": [
               {
@@ -441,6 +472,16 @@
             ],
             "title": "Marker"
           },
+          "period": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Period"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "reason": {
             "anyOf": [
               {
@@ -451,6 +492,11 @@
               }
             ],
             "title": "Reason"
+          },
+          "required": {
+            "default": true,
+            "title": "Required",
+            "type": "boolean"
           },
           "since": {
             "anyOf": [
@@ -463,6 +509,16 @@
               }
             ],
             "title": "Since"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceName"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "stable": {
             "title": "Stable",
@@ -654,6 +710,13 @@
           "period": {
             "$ref": "#/components/schemas/Period"
           },
+          "readiness": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Observation"
+            },
+            "title": "Readiness",
+            "type": "object"
+          },
           "sections": {
             "items": {
               "$ref": "#/components/schemas/SectionResult"
@@ -780,10 +843,19 @@
             "enum": [
               "queued",
               "waiting",
+              "running",
               "succeeded",
               "failed"
             ],
             "title": "State",
+            "type": "string"
+          },
+          "trigger_kind": {
+            "enum": [
+              "manual",
+              "automatic"
+            ],
+            "title": "Trigger Kind",
             "type": "string"
           },
           "version": {
@@ -801,6 +873,7 @@
         "required": [
           "id",
           "mode",
+          "trigger_kind",
           "report_id",
           "version",
           "draft_revision",

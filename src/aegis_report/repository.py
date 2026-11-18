@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
@@ -102,7 +102,7 @@ class Reports:
 
     def _run(self, conn, owner, run_id):
         run = conn.execute("""
-            SELECT id, mode, report_id, version, draft_revision, period, state, result, error_code, readiness
+            SELECT id, mode, trigger_kind, report_id, version, draft_revision, period, state, result, error_code, readiness
             FROM rpt.runs WHERE id = %s AND owner_key = %s AND (expires_at IS NULL OR expires_at > now())
         """, (run_id, owner)).fetchone()
         if not run:
@@ -114,22 +114,33 @@ class Reports:
             return self._run(conn, owner, run_id)
 
     def enqueue_run(self, owner: bytes, report_id: UUID, request: RunRequest):
+        return self._enqueue_generation(owner, report_id, request, "manual")
+
+    def enqueue_automatic(self, owner: bytes, report_id: UUID, request: RunRequest, due_at: datetime):
+        """Internal entry point for automatic generation. The scheduler supplies the due time."""
+        return self._enqueue_generation(owner, report_id, request, "automatic", due_at)
+
+    def _enqueue_generation(self, owner, report_id, request, trigger_kind, due_at=None):
         with connect(self.dsn) as conn:
             version = self._report_version(conn, owner, report_id, request.version)
             period = request.period.model_dump(mode="json")
             job = conn.execute("""
-                INSERT INTO rpt.runs (id, owner_key, mode, report_id, version, period, spec, idempotency_key)
-                VALUES (%s, %s, 'generate', %s, %s, %s, %s, %s)
+                INSERT INTO rpt.runs
+                    (id, owner_key, mode, trigger_kind, report_id, version, period, spec, idempotency_key, next_probe_at)
+                VALUES (%s, %s, 'generate', %s, %s, %s, %s, %s, %s, coalesce(%s, now()))
                 ON CONFLICT (owner_key, idempotency_key) DO NOTHING
                 RETURNING id
-            """, (uuid4(), owner, report_id, request.version, Jsonb(period), Jsonb(version["spec"]),
-                  request.request_key)).fetchone()
+            """, (uuid4(), owner, trigger_kind, report_id, request.version, Jsonb(period), Jsonb(version["spec"]),
+                  request.request_key, due_at)).fetchone()
             if job:
                 return job
             previous = conn.execute("""
-                SELECT id, report_id, version, period FROM rpt.runs WHERE owner_key = %s AND idempotency_key = %s
+                SELECT id, report_id, version, period, trigger_kind FROM rpt.runs
+                WHERE owner_key = %s AND idempotency_key = %s
             """, (owner, request.request_key)).fetchone()
-            if (previous["report_id"], previous["version"], previous["period"]) != (report_id, request.version, period):
+            if (previous["report_id"], previous["version"], previous["period"], previous["trigger_kind"]) != (
+                report_id, request.version, period, trigger_kind
+            ):
                 raise HTTPException(409, "request_key_reused")
             return {"id": previous["id"]}
 

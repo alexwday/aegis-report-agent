@@ -14,7 +14,8 @@ from aegis_report.auth import LocalAuth
 from aegis_report.config import Settings
 from aegis_report.db import connect
 from aegis_report.gateway import StubGateway
-from aegis_report.models import Period, SourceName
+from aegis_report.models import Period, RunRequest, SourceName
+from aegis_report.repository import Reports
 from aegis_report.sources import (
     BankCatalog,
     BenchmarkingSource,
@@ -30,10 +31,11 @@ pytestmark = pytest.mark.postgres
 
 
 @pytest.fixture
-def settings():
+def settings(monkeypatch):
     if os.environ.get("AEGIS_TEST_FIXTURE") != "1":
         pytest.skip("Run through ./scripts/test for the disposable database")
-    return replace(Settings.from_env(), quiet_seconds=0, poll_seconds=0.01)
+    monkeypatch.delenv("QUIET_SECONDS", raising=False)
+    return replace(Settings.from_env(), poll_seconds=0.01)
 
 
 @pytest.fixture
@@ -205,22 +207,33 @@ def test_template_preview_diff_save_next_quarter_and_owner_boundaries(settings):
 
 
 def test_worker_waits_again_when_mid_load_marker_changes(settings, admin):
-    settings = replace(settings, quiet_seconds=30)
-    worker = Worker(settings, StubGateway())
+    assert settings.quiet_seconds == 1800
+    time = [datetime.now(UTC) + timedelta(seconds=1)]
+    worker = Worker(settings, StubGateway(), clock=lambda: time[0])
     with TestClient(create_app(settings)) as app:
         draft = submit(app, "POST", "/v1/drafts", {"bank": "SYN1-CA"})
         saved = submit(app, "POST", f"/v1/drafts/{draft['id']}/save", {"revision": 1})
         path = f"/v1/reports/{saved['report_id']}/runs"
-        body = {"version": 1, "period": Q3, "request_key": "mid-load-fixture"}
-        queued = submit(app, "POST", path, body)
-        assert submit(app, "POST", path, body) == queued
+        body = {"version": 1, "period": Q3, "request_key": "manual-mid-load-fixture"}
+        manual = submit(app, "POST", path, body)
+        assert submit(app, "POST", path, body) == manual
         assert app.post(path, json=body | {"period": Q2}).status_code == 409
+        assert worker.run_one()
+        assert submit(app, "GET", f"/v1/runs/{manual['id']}")["state"] == "succeeded"
+
+        owner = LocalAuth(settings.local_user_id).authenticate(None).owner_key(settings.owner_secret)
+        request = RunRequest.model_validate(body | {"request_key": "automatic-mid-load-fixture"})
+        queued = Reports(settings.report_dsn, settings.retention_days).enqueue_automatic(
+            owner, saved["report_id"], request, time[0],
+        )
         status = f"/v1/runs/{queued['id']}"
-        first = datetime.now(UTC) + timedelta(seconds=1)
-        assert worker.run_one(first)
-        assert submit(app, "GET", status)["state"] == "waiting"
-        initial = submit(app, "GET", status)["readiness"]["net-income:0"]
+        assert worker.run_one()
+        observed = submit(app, "GET", status)
+        assert observed["trigger_kind"] == "automatic" and observed["state"] == "waiting"
+        initial = observed["readiness"]["net-income:0"]
         assert initial["state"] == "ready" and not initial["stable"]
+        time[0] += timedelta(seconds=1799)
+        assert not worker.run_one()
         admin.execute("""
             INSERT INTO public.benchmarking_report
                 (bank_symbol, "Parameter", "Platform", fiscal_year, quarter, "Actual", filepath)
@@ -228,17 +241,53 @@ def test_worker_waits_again_when_mid_load_marker_changes(settings, admin):
         """)
         admin.commit()
         try:
-            assert worker.run_one(first + timedelta(seconds=31))
+            time[0] += timedelta(seconds=2)
+            assert worker.run_one()
             current = submit(app, "GET", status)
             changed = current["readiness"]["net-income:0"]
             assert current["state"] == "waiting" and changed["marker"] != initial["marker"] and not changed["stable"]
+            assert changed["data_stability"] == "recently_changed"
             assert app.get(f"{status}/output.json").status_code == 409
-            assert worker.run_one(first + timedelta(seconds=62))
-            assert submit(app, "GET", status)["state"] == "succeeded"
+            time[0] += timedelta(seconds=1800)
+            assert worker.run_one()
+            result = submit(app, "GET", f"{status}/output.json")
+            assert result["readiness"]["net-income:0"]["data_stability"] == "stable"
         finally:
             admin.execute('DELETE FROM public.benchmarking_report WHERE "Parameter" = %s',
                           ("Fixture partial load metric",))
             admin.commit()
+
+
+def test_preview_runs_on_first_poll_with_default_quiet_and_exposes_missing_data(settings):
+    assert settings.quiet_seconds == 1800
+    time = datetime.now(UTC) + timedelta(seconds=1)
+    with TestClient(create_app(settings)) as app:
+        draft = submit(app, "POST", "/v1/drafts", {"bank": "SYN1-CA"})
+        pending = submit(app, "POST", f"/v1/drafts/{draft['id']}/previews", {
+            "revision": 1, "period": {"year": 2090, "quarter": 4},
+        })
+        assert Worker(settings, StubGateway(), clock=lambda: time).run_one()
+        result = submit(app, "GET", f"/v1/runs/{pending['id']}/output.json")
+        assert result["sections"][0]["rows"] == []
+        entry = result["readiness"]["net-income:0"]
+        assert entry["state"] == "absent" and entry["data_stability"] == "unknown"
+        assert entry["period"] == {"year": 2090, "quarter": 4}
+
+
+def test_benchmark_unit_falls_back_and_marks_unknown(admin):
+    query = scope(admin, metric="Fixture unit fallback")
+    admin.execute("""
+        INSERT INTO public.benchmarking_report
+            (bank_symbol, "Parameter", "Platform", fiscal_year, quarter, "Actual", "Units")
+        VALUES ('SYN1-CA', 'Fixture unit fallback', 'Enterprise', 2090, 'Q3', 17, 'count'),
+               ('SYN1-CA', 'Fixture unit fallback', 'Enterprise', 2090, 'Q2', 16, NULL)
+    """)
+    adapter = BenchmarkingSource({})
+    with_unit = adapter.search(admin, query)[0]
+    unknown = adapter.search(admin, replace(query, period=query.period.shifted(-1)))[0]
+    assert (with_unit.unit, with_unit.unit_source) == ("count", "row")
+    assert (unknown.unit, unknown.unit_source) == (None, "unknown")
+    assert compute_change(with_unit, unknown) is None
 
 
 def test_worker_refuses_inactive_owner_and_removes_expired_preview(settings, admin):

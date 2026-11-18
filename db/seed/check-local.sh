@@ -20,3 +20,4 @@ trap cleanup EXIT
 fixture_psql=(env -u PGHOSTADDR -u PGSERVICE "$pg_bin/psql" -X -h "$fixture_dir" -p 5432 -U fixture_admin -d postgres -v ON_ERROR_STOP=1)
 "${fixture_psql[@]}" --single-transaction -q -f "$repo_dir/db/sources.sql" -f "$repo_dir/db/seed/synthetic.sql"
 "${fixture_psql[@]}" -At -f "$repo_dir/db/seed/check.sql"
+"${fixture_psql[@]}" -At -f "$repo_dir/db/seed/check-catalog-v3.sql"

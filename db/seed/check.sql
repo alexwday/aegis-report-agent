@@ -63,3 +63,53 @@ FROM pg_extension WHERE extname = 'vector';
 SELECT '19 populated source fixture tables with expected column counts';
 SELECT 'Unified joins, quoted KPIs, transcript version overlap, and halfvec cosine passed';
 SELECT count(*) || ' draft rpt tables applied' FROM information_schema.tables WHERE table_schema = 'rpt';
+
+DO $catalog$
+DECLARE
+    relation text;
+BEGIN
+    IF EXISTS (SELECT FROM pg_index WHERE indrelid = 'public.benchmarking_report'::regclass) THEN
+        RAISE EXCEPTION 'Benchmarking must have no index or key';
+    END IF;
+
+    IF (SELECT count(*) FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'benchmarking_report'
+          AND ((column_name = 'yr_Qtr' AND is_nullable = 'YES' AND character_maximum_length = 500)
+            OR (column_name = 'quarter' AND is_nullable = 'NO' AND character_maximum_length = 10)
+            OR (column_name = 'fiscal_year' AND is_nullable = 'NO')
+            OR (column_name = 'updated_at' AND data_type = 'timestamp without time zone' AND column_default = 'now()'))) <> 4 THEN
+        RAISE EXCEPTION 'Benchmarking type, nullability, or default mismatch';
+    END IF;
+
+    IF EXISTS (
+        SELECT FROM pg_class idx JOIN pg_am am ON am.oid = idx.relam
+        JOIN pg_namespace ns ON ns.oid = idx.relnamespace
+        WHERE ns.nspname = 'public' AND am.amname IN ('ivfflat', 'hnsw')
+    ) THEN
+        RAISE EXCEPTION 'Unexpected ANN index in fixture';
+    END IF;
+
+    FOR relation IN SELECT tablename FROM pg_tables
+        WHERE schemaname = 'public' AND tablename LIKE 'aegis-%-data'
+    LOOP
+        IF NOT EXISTS (
+            SELECT FROM pg_constraint
+            WHERE conrelid = format('public.%I', relation)::regclass
+              AND contype = 'p' AND pg_get_constraintdef(oid) = 'PRIMARY KEY (file_id, chunk_id)'
+        ) OR (SELECT array_agg(column_name::text ORDER BY ordinal_position)
+              FROM information_schema.columns
+              WHERE table_schema = 'public' AND table_name = relation AND ordinal_position <= 5)
+             <> ARRAY['source_type', 'fiscal_year', 'quarter', 'bank', 'filename'] THEN
+            RAISE EXCEPTION 'Unified data key or confirmed column order mismatch: %', relation;
+        END IF;
+    END LOOP;
+
+    IF (SELECT column_default FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'aegis_event_transcripts' AND column_name = 'id')
+       NOT LIKE '%aegis_event_transcripts_id_seq%' THEN
+        RAISE EXCEPTION 'Event transcript serial sequence must be independent';
+    END IF;
+END
+$catalog$;
+
+SELECT 'R-001 catalog checks passed for confirmed keys, types, defaults, and ordinals';

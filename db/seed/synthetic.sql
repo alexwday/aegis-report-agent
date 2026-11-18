@@ -16,7 +16,8 @@ INSERT INTO public.aegis_data_availability
     (id, bank_id, bank_name, bank_symbol, bank_aliases, bank_tags, fiscal_year, quarter,
      database_names, last_updated, last_updated_by)
 SELECT 10 * bank.id + period.number, bank.id, bank.name, bank.symbol,
-       ARRAY[bank.short, bank.name], ARRAY['synthetic'], 2090, 'Q' || period.number,
+       CASE WHEN period.number <> 3 THEN ARRAY[bank.short, bank.name] END,
+       CASE WHEN period.number <> 3 THEN ARRAY['synthetic'] END, 2090, 'Q' || period.number,
        CASE
            WHEN bank.id = 903 THEN ARRAY['event_transcripts', 'supplementary']
            WHEN period.number = 3 THEN ARRAY['transcripts', 'rts', 'pillar3', 'investor_presentation', 'supplementary_financials']
@@ -30,11 +31,11 @@ INSERT INTO public.kpi_metadata
     (id, kpi_name, description, synonyms, platforms, unit, higher_is_better, key_drivers, analyst_usage)
 VALUES
     (801, 'Net Income', 'Synthetic profit series', ARRAY['Fixture profit'], ARRAY['Enterprise'], 'millions', true, 'Synthetic activity', 'Trend'),
-    (802, 'Efficiency Ratio', 'Synthetic expense ratio', ARRAY['Fixture efficiency'], ARRAY['Enterprise'], '%', false, 'Synthetic costs', 'Ranking');
+    (802, 'Efficiency Ratio', 'Synthetic expense ratio', ARRAY['Fixture efficiency'], ARRAY['Enterprise', 'Capital Markets'], '%', false, 'Synthetic costs', 'Ranking');
 
 INSERT INTO public.benchmarking_report
     (bank, bank_symbol, "Parameter", "Platform", "ID", "yr_Qtr", fiscal_year,
-     quarter, "Actual", "QoQ", source, "Units", "BPS", updated_at, filepath)
+     quarter, "Actual", "QoQ", "YoY", source, "Units", "BPS", updated_at, filepath)
 SELECT bank.short, bank.symbol, metric.kpi_name, 'Enterprise', 'fixture-' || metric.id,
        '2090_Q' || period.number, 2090, 'Q' || period.number,
        CASE
@@ -42,7 +43,8 @@ SELECT bank.short, bank.symbol, metric.kpi_name, 'Enterprise', 'fixture-' || met
            WHEN metric.id = 801 THEN 410 + 3 * (bank.id - 900) + 11 * period.number
            ELSE 47 + (bank.id - 900) - 0.4 * period.number
        END,
-       NULL, 'Calculated', NULL, NULL, timestamptz '2090-10-01 00:00:00+00',
+       CASE WHEN period.number = 3 THEN CASE metric.id WHEN 802 THEN -40 ELSE 2.54 END END,
+       NULL, 'Calculated', NULL, CASE WHEN metric.id = 802 THEN 'Yes' END, timestamp '2090-10-01 00:00:00',
        'synthetic/benchmarking.csv'
 FROM seed_bank bank CROSS JOIN public.kpi_metadata metric
 CROSS JOIN generate_series(1, 3) AS period(number);
@@ -51,21 +53,31 @@ INSERT INTO public.benchmarking_report
     (bank, "Parameter", "Platform", "yr_Qtr", fiscal_year, quarter, "Actual", source, filepath)
 VALUES ('Fixture peers', 'Net Income', 'Enterprise', '2090_Q3', 2090, 'Q3', 811, 'Calculated', 'synthetic/benchmarking.csv');
 
+INSERT INTO public.benchmarking_report
+    (bank, bank_symbol, "Parameter", "Platform", fiscal_year, quarter, "Actual", "QoQ", "Units", filepath)
+VALUES
+    ('SYN3', 'SYN3-US', 'Efficiency Ratio', 'Capital Markets', 2090, 'Q3', 47.77, -34, '%', 'synthetic/benchmarking.csv'),
+    ('SYN1', 'SYN1-CA', 'Net Income', 'Enterprise', 2088, 'Q3', 400, NULL, 'fixture invalid unit', 'synthetic/benchmarking.csv');
+
+-- Real identifiers are excluded; the synthetic relative paths exercise the documented naming pattern.
+
+
 INSERT INTO public.aegis_transcripts
     (file_path, filename, date_last_modified, title, transcript_type, event_id, version_id,
      institution_type, institution_id, ticker, company_name, fiscal_year, fiscal_quarter,
      section_name, speaker_block_id, qa_group_id, chunk_id, chunk_tokens, chunk_paragraph_ids,
      chunk_content, block_summary, classification_ids, classification_names, chunk_embedding, created_at, updated_at)
-SELECT 'synthetic/calls/' || version.kind || '.xml', 'synthetic-' || version.kind || '.xml',
+SELECT 'synthetic/calls/' || version.number || '.xml',
+       bank.symbol || '_Q3_2090_' || version.kind || '_991_' || version.number || '.xml',
        timestamptz '2090-08-10 00:00:00+00', 'Fixture Q3 2090 Earnings Call',
-       version.kind, 'fixture-earnings-1', version.number,
+       version.kind, '991', version.number,
        'Canadian_Banks', bank.id::text, bank.symbol, bank.name, 2090, 'Q3',
        chunk.section, chunk.block, chunk.qa, chunk.position, 24, ARRAY['p-' || chunk.position],
        chunk.body, 'Fictional discussion for adapter tests.', ARRAY['fixture-margin'],
        ARRAY['Net Interest Income & Margins'], vectors.embedding,
        timestamptz '2090-08-10 00:00:00+00', timestamptz '2090-08-10 00:00:00+00'
 FROM seed_bank bank
-CROSS JOIN (VALUES ('Raw', '1'), ('Corrected', '2')) AS version(kind, number)
+CROSS JOIN (VALUES ('Raw', '30'), ('Corrected', '2'), ('Corrected', '11')) AS version(kind, number)
 CROSS JOIN (VALUES
     ('MANAGEMENT DISCUSSION SECTION', 1, NULL::integer, 1, '[Synthetic Speaker, CFO, Fixture Bank] Margins widened in the fixture.'),
     ('Q&A', 2, 1, 1, '[Synthetic Analyst, Analyst, Fixture Research] What drove the change?'),
@@ -112,7 +124,7 @@ BEGIN
         SELECT * FROM (VALUES
             ('investor-slides', 'SYN1-CA', 'Q3', 'pdf', 3, 'Fixture capital position', 1),
             ('financial-supp', 'SYN1', 'Q2', 'xlsx', 24, 'Fixture income statement', 2),
-            ('earnings-transcripts', 'SYN1-CA', 'Q2', 'xml', 1, 'Fixture earnings discussion', 1),
+            ('earnings-transcripts', 'SYN1-CA', 'Q2', 'xml', 1, 'Fixture earnings discussion', 2),
             ('event-transcripts', 'SYN1-CA', 'Q2', 'xml', 2, 'Fixture unverified event variant', 1),
             ('pillar3', 'SYN1-CA', 'Q2', 'xlsx', 5, 'Fixture ratios', 1),
             ('rts', 'SYN1-CA', 'Q2', 'pdf', 8, NULL, 1)
@@ -123,8 +135,11 @@ BEGIN
                 (source_type, bank, fiscal_year, quarter, filename, file_id, file_type,
                  file_path, file_hash, page_number, name, chunk_id, summary, chunk_content,
                  keywords, metrics, created_at)
-            SELECT $1, $2, '2090', $3, $1 || '-fixture.' || $4, $1 || '-fixture', $4,
-                   'synthetic/' || $1 || '-fixture.' || $4, md5($1 || '-fixture'), $5, $6,
+            SELECT $1, $2, '2090', $3,
+                   CASE WHEN $1 = 'earnings-transcripts' THEN 'SYN1-CA_Q2_2090_Corrected_990_1.xml'
+                        ELSE $1 || '-fixture.' || $4 END,
+                   $1 || '-fixture', $4,
+                   'synthetic/' || $1 || '-fixture.' || $4, md5($1 || '-fixture'), CASE WHEN $1 = 'earnings-transcripts' THEN 3 - part ELSE $5 END, $6,
                    CASE WHEN $1 = 'financial-supp' THEN 'sheet_' ELSE 'page_' END || $5 || '.' || part,
                    'Fabricated evidence, part ' || part,
                    CASE WHEN $1 = 'financial-supp'
@@ -146,7 +161,7 @@ BEGIN
                  embedding_dimensions, created_at)
             SELECT d.file_id || ':' || d.chunk_id, 'content', 'content_unit', d.source_type,
                    d.fiscal_year, d.quarter, d.bank, d.filename, d.file_id, d.file_type, d.file_path, d.file_hash,
-                   NULL, d.chunk_id, NULL, 'fixture-section', d.chunk_content, md5(d.chunk_content),
+                   NULL, d.chunk_id, '[]'::jsonb, 'fixture-section', d.chunk_content, md5(d.chunk_content),
                    vectors.embedding, 'text-embedding-3-large', 3072, d.created_at
             FROM public.%I d CROSS JOIN seed_vector vectors
             WHERE vectors.id = 1

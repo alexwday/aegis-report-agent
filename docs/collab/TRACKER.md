@@ -36,4 +36,4 @@
 | T-034 | G4 | Add explicit bank lists and the core Canadian peer group, with comparable statistics and per-bank diffs. | DONE | [Peers](../../src/aegis_report/peers.py), [diff](../../src/aegis_report/diff.py) |
 | T-035 | G4 | Run chat acceptance cases and provide stub and real gateway evaluation. | DONE | [Cases](../../tests/fixtures/chat_requests.json), [evaluation](../../scripts/eval_chat.py) |
 | T-036 | G4 | Demonstrate chat preview, accept, diff and save. Add PDF headers and schedule history. | DONE | [Demo](../../scripts/demo.py), [API contract](../../api/openapi.json) |
-| T-037 | G4 | Submit S-005 and wait at G4 for R-005. | REVIEW | [S-005](status/S-005.md), `review-005` |
+| T-037 | G4 | Submit S-005 and wait at G4 for R-005. | DONE | [S-005](status/S-005.md), `review-005` |

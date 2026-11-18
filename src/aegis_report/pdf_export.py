@@ -14,6 +14,7 @@ from reportlab.platypus import KeepTogether, LongTable, Paragraph, SimpleDocTemp
 
 from .engine import display_value
 from .models import Period
+from .peers import peer_text
 from .sources import BenchmarkFact
 
 FONT_DIR = Path(reportlab.__file__).resolve().parent / "fonts"
@@ -114,6 +115,8 @@ def render_pdf(result: dict) -> bytes:
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
             ]))
             parts.extend([table, Spacer(1, 8)])
+        for peer in section.get("peers", []):
+            parts.append(paragraph(peer_text(peer), "meta", [row["citation_id"] for row in peer["ranks"]]))
         for change in section.get("comparisons") or [section.get("comparison")]:
             if change:
                 parts.append(paragraph(comparison_text(change), "meta", change["citation_ids"]))

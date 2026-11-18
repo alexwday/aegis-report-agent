@@ -205,6 +205,13 @@
             "const": "calculate",
             "title": "Kind",
             "type": "string"
+          },
+          "peers": {
+            "items": {
+              "$ref": "#/components/schemas/PeerStatistics"
+            },
+            "title": "Peers",
+            "type": "array"
           }
         },
         "required": [
@@ -268,6 +275,17 @@
       "Comparison": {
         "additionalProperties": false,
         "properties": {
+          "bank": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank"
+          },
           "basis": {
             "enum": [
               "basis_points",
@@ -423,7 +441,9 @@
               "section",
               "row",
               "claim",
-              "note"
+              "note",
+              "peer",
+              "comparison"
             ],
             "title": "Entity",
             "type": "string"
@@ -831,6 +851,17 @@
       "GatheredPassage": {
         "additionalProperties": false,
         "properties": {
+          "bank": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank"
+          },
           "citation": {
             "$ref": "#/components/schemas/Citation"
           },
@@ -1050,6 +1081,145 @@
           "stable"
         ],
         "title": "Observation",
+        "type": "object"
+      },
+      "PeerRank": {
+        "additionalProperties": false,
+        "properties": {
+          "bank": {
+            "title": "Bank",
+            "type": "string"
+          },
+          "citation_id": {
+            "title": "Citation Id",
+            "type": "string"
+          },
+          "rank": {
+            "title": "Rank",
+            "type": "integer"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bank",
+          "rank",
+          "value",
+          "citation_id"
+        ],
+        "title": "PeerRank",
+        "type": "object"
+      },
+      "PeerStatistics": {
+        "additionalProperties": false,
+        "properties": {
+          "basis": {
+            "const": "vendor_fiscal_label",
+            "title": "Basis",
+            "type": "string"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "high": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "High"
+          },
+          "low": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Low"
+          },
+          "median": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median"
+          },
+          "metric": {
+            "title": "Metric",
+            "type": "string"
+          },
+          "period": {
+            "$ref": "#/components/schemas/Period"
+          },
+          "ranks": {
+            "items": {
+              "$ref": "#/components/schemas/PeerRank"
+            },
+            "title": "Ranks",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "missing_member",
+                  "unknown_unit",
+                  "mixed_units",
+                  "unknown_currency",
+                  "mixed_currencies",
+                  "mixed_change_basis"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "segment": {
+            "title": "Segment",
+            "type": "string"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          }
+        },
+        "required": [
+          "metric",
+          "segment",
+          "period",
+          "basis"
+        ],
+        "title": "PeerStatistics",
         "type": "object"
       },
       "Period": {
@@ -1695,6 +1865,13 @@
               }
             ]
           },
+          "peers": {
+            "items": {
+              "$ref": "#/components/schemas/PeerStatistics"
+            },
+            "title": "Peers",
+            "type": "array"
+          },
           "rows": {
             "items": {
               "$ref": "#/components/schemas/BenchmarkFact"
@@ -1760,6 +1937,13 @@
                 "type": "null"
               }
             ]
+          },
+          "peers": {
+            "items": {
+              "$ref": "#/components/schemas/PeerStatistics"
+            },
+            "title": "Peers",
+            "type": "array"
           },
           "resolved_periods": {
             "items": {
@@ -1827,10 +2011,35 @@
         "additionalProperties": false,
         "properties": {
           "bank": {
-            "maxLength": 10,
-            "pattern": "^[A-Z0-9.]+-[A-Z]{2}$",
-            "title": "Bank",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 10,
+                "pattern": "^[A-Z0-9.]+-[A-Z]{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank"
+          },
+          "banks": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 10,
+                  "pattern": "^[A-Z0-9.]+-[A-Z]{2}$",
+                  "type": "string"
+                },
+                "maxItems": 12,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Banks"
           },
           "id": {
             "pattern": "^[a-z][a-z0-9_-]{0,39}$",
@@ -1872,6 +2081,18 @@
             "title": "Output Format",
             "type": "string"
           },
+          "peer_group": {
+            "anyOf": [
+              {
+                "const": "big-6-canadian-banks",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Peer Group"
+          },
           "sources": {
             "items": {
               "anyOf": [
@@ -1904,7 +2125,6 @@
         "required": [
           "id",
           "title",
-          "bank",
           "sources",
           "instruction"
         ],
@@ -2122,6 +2342,20 @@
       "ThemeClaim": {
         "additionalProperties": false,
         "properties": {
+          "banks": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Banks"
+          },
           "citations": {
             "items": {
               "$ref": "#/components/schemas/Citation"

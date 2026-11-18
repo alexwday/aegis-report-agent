@@ -63,6 +63,7 @@ class ThemeClaim(StrictModel):
     evidence_ids: list[str]
     citations: list[Citation]
     method: str
+    banks: list[str] | None = None
 
 
 @dataclass(frozen=True)

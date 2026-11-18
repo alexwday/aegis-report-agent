@@ -3,6 +3,7 @@ from html import escape
 from .claims import INSTRUCTION_TEXT, SPEAKER_TAG, draft_themes
 from .gateway import GatewayError, ModelGateway
 from .models import Period, ReportSpec, SectionSpec, StageKind, compile_section
+from .peers import peer_statistics, peer_text
 from .sources import BenchmarkFact, Passage, compute_change
 
 
@@ -37,6 +38,7 @@ def gathered_passages(passages: list[Passage]) -> list[dict]:
             "citation": passage.citation.model_dump(mode="json"),
             "period": passage.period.model_dump(),
             "topics": list(passage.topics),
+            "bank": passage.bank,
         })
         if len(distinct) == 50:
             break
@@ -55,7 +57,7 @@ def generate_section(
         "resolved_periods": [quarter.shifted(offset).model_dump() for offset in section.time.resolved_offsets()],
     }
     stages = []
-    comparisons, claims, note = [], [], None
+    comparisons, claims, peers, note = [], [], [], None
     for stage in compile_section(section):
         if stage.kind is StageKind.RETRIEVE:
             if trace or gather_only:
@@ -63,12 +65,19 @@ def generate_section(
             if gather_only:
                 break
         elif stage.kind is StageKind.CALCULATE:
-            comparisons = changes_for(rows, quarter, section.time.comparison_offset())
+            offset = section.time.comparison_offset()
+            comparisons = changes_for(rows, quarter, offset) if offset is not None else []
+            peers = peer_statistics(section, quarter, rows)
             if trace:
-                stages.append({"kind": stage.kind, "comparisons": comparisons})
+                stages.append({"kind": stage.kind, "comparisons": comparisons, "peers": peers})
         elif stage.kind is StageKind.DRAFT:
             if section.kind in ("themes", "highlights"):
                 claims = [claim.model_dump(mode="json") for claim in draft_themes(section.instruction, passages, gateway)]
+                if len(section.bank_symbols()) > 1:
+                    banks_by_id = {passage.citation.id: passage.bank for passage in passages}
+                    for claim in claims:
+                        claim["banks"] = sorted({banks_by_id[id_] for id_ in claim["evidence_ids"]})
+                        claim["key"] = ",".join(claim["banks"]) + ":" + claim["key"]
             else:
                 note = draft_note(section.instruction, rows, gateway)
             if trace:
@@ -81,7 +90,7 @@ def generate_section(
     blocks = {
         "rows": [] if gather_only else row_data,
         "claims": claims, "note": note, "comparison": comparisons[0] if comparisons else None,
-        "comparisons": comparisons,
+        "comparisons": comparisons, "peers": peers,
     }
     if trace and not gather_only:
         stages.append({"kind": "format", "blocks": blocks})
@@ -106,7 +115,7 @@ def changes_for(rows: list[BenchmarkFact], quarter: Period, offset: int) -> list
             comparisons.append({
                 "value": str(value) if value is not None else None,
                 "basis": primary.change_basis, "metric": primary.metric, "segment": primary.segment,
-                "offset": offset, "citation_ids": [primary.citation.id, baseline.citation.id],
+                "offset": offset, "bank": primary.bank, "citation_ids": [primary.citation.id, baseline.citation.id],
                 "provenance": origin if value is not None else None,
             })
     return comparisons
@@ -142,7 +151,9 @@ def render_html(result: dict) -> str:
         if observation.get("evidence_state") == "no_match":
             selector = observation.get("selector") or {}
             focus = selector.get("topic") or ", ".join(selector.get("topics") or selector.get("terms") or [])
-            blocks.append(f"<p>No evidence matched {escape(focus or key)}.</p>")
+            bank = observation.get("bank")
+            bank_label = f" ({escape(bank)})" if bank else ""
+            blocks.append(f"<p>No evidence matched {escape(focus or key)}.{bank_label}</p>")
         if observation.get("data_stability") != "stable" or observation["state"] != "ready":
             scope = " · ".join(str(value) for value in (
                 observation.get("bank"), observation.get("source"),
@@ -180,6 +191,8 @@ def render_html(result: dict) -> str:
                     f"<td>{escape(display_value(fact))}</td><td>{citation_link(fact.citation.id)}</td></tr>"
                 )
             blocks.append("</tbody></table>")
+        for peer in section.get("peers", []):
+            blocks.append(f"<p>{escape(peer_text(peer))}</p>")
         note = section["note"]
         if note:
             blocks.append(f"<p>{escape(note['text'])} {citation_link(note['citation_id'])}</p>")
@@ -191,16 +204,19 @@ def render_html(result: dict) -> str:
                 elif change.get("provenance") in ("vendor_qoq", "vendor_yoy"):
                     label += " (vendor " + change["provenance"].removeprefix("vendor_").upper() + ")"
                 links = " ".join(citation_link(cite) for cite in change["citation_ids"])
-                metric = f"{escape(change['metric'])}: " if change.get("metric") else ""
+                name = " · ".join(filter(None, (change.get("bank"), change.get("metric"))))
+                metric = f"{escape(name)}: " if name else ""
                 blocks.append(
                     f"<p>{metric}change versus {abs(change['offset'])} fiscal quarter(s) earlier: "
                     f"{escape(label)}. {links}</p>"
                 )
         for claim in section.get("claims", []):
+            banks = ", ".join(claim.get("banks") or [])
+            bank_prefix = f"{escape(banks)} · " if banks else ""
             for citation in claim["citations"]:
                 sources[citation["id"]] = citation["locator"]
             refs = " ".join(citation_link(id_) for id_ in claim["evidence_ids"])
-            blocks.append(f"<p><strong>{escape(claim['topic'])}</strong> · {escape(claim['text'])} {refs}</p>")
+            blocks.append(f"<p><strong>{escape(claim['topic'])}</strong> · {bank_prefix}{escape(claim['text'])} {refs}</p>")
         blocks.append("</section>")
     blocks.append("<section><h2>Sources</h2><ol>")
     for citation_id, locator in sources.items():

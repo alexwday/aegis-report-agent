@@ -36,6 +36,7 @@ class RequestScope:
     period: Period
     selector: SectionInput
     instruction: str
+    peer_group: str | None = None
 
     @property
     def source(self) -> SourceName:
@@ -69,12 +70,14 @@ def requests_for(spec: ReportSpec, period: Period) -> list[RequestScope]:
     shifts = period_scopes(spec, period)
     return [
         RequestScope(
-            f"{section.id}:{index}:{offset}" if index else f"{section.id}:{offset}",
-            section.id, section.bank, target, selector, section.instruction,
+            (f"{section.id}:{index}:{offset}" if index else f"{section.id}:{offset}")
+            + (f":{bank}" if section.bank is None else ""),
+            section.id, bank, target, selector, section.instruction, section.peer_group,
         )
         for section in spec.sections
         for offset, target in shifts[section.id].items()
         for index, selector in enumerate(section.sources)
+        for bank in section.bank_symbols()
     ]
 
 
@@ -230,13 +233,16 @@ class Worker:
         vectors = self._vectors(requests, previous, automatic)
         with connect(self.settings.source_dsn, source=True) as source_conn:
             banks, items, readiness = {}, [], {}
+            catalog = self.catalog.list(source_conn)
             for item in requests:
                 if item.bank not in banks:
                     try:
-                        banks[item.bank] = self.catalog.resolve(source_conn, item.bank)
+                        banks[item.bank] = self.catalog.match(catalog, item.bank)
                     except SourceIssue as issue:
                         banks[item.bank] = issue
                 bank = banks[item.bank]
+                if item.peer_group and not isinstance(bank, SourceIssue) and "canadian_bank" not in bank.tags:
+                    bank = SourceIssue(Readiness.UNKNOWN, "peer_group_membership_unconfirmed")
                 if isinstance(bank, SourceIssue):
                     probe = Probe(state=bank.state, reason=bank.reason)
                     readiness[item.key] = observe(probe, {}, now, self.settings.quiet_seconds) | item.describe()

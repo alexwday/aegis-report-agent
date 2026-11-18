@@ -9,7 +9,7 @@ class FieldChange(StrictModel):
 
 
 class DetailChange(StrictModel):
-    entity: Literal["section", "row", "claim", "note"]
+    entity: Literal["section", "row", "claim", "note", "peer", "comparison"]
     section_id: str
     key: str
     operation: Literal["added", "removed", "moved", "changed"]
@@ -40,6 +40,8 @@ def report_diff(baseline: dict, preview: dict) -> tuple[dict, DiffDetails]:
         for entity, field, identity in (
             ("row", "rows", row_key), ("claim", "claims", lambda claim: claim["key"]),
             ("note", "note", lambda note: "note"),
+            ("peer", "peers", lambda peer: row_key(peer | {"bank": "Peers"})),
+            ("comparison", "comparisons", comparison_key),
         ):
             old_items = old.get(field) or []
             new_items = new.get(field) or []
@@ -61,7 +63,7 @@ def report_diff(baseline: dict, preview: dict) -> tuple[dict, DiffDetails]:
 
 
 def compared(section: dict) -> dict:
-    return {"mode": "one_step"} | {key: value for key, value in section.items() if key != "stage_outputs"}
+    return {"mode": "one_step", "peers": []} | {key: value for key, value in section.items() if key != "stage_outputs"}
 
 
 def headings(sections):
@@ -71,6 +73,10 @@ def headings(sections):
 def row_key(row):
     period = row["period"]
     return f"{row['bank']} · {row['metric']} · {row['segment']} · FY{period['year']} Q{period['quarter']}"
+
+
+def comparison_key(item):
+    return " · ".join(str(item.get(field) or "") for field in ("bank", "metric", "segment", "offset"))
 
 
 def compare_items(section_id, entity, before, after, identity):

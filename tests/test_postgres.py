@@ -729,3 +729,41 @@ def test_document_claims_quote_bullets_and_exclude_reference_sections(admin):
     assert [claim.text for claim in values] == [bullet]
     assert values[0].evidence_ids == [head.citation.id]
     assert draft_themes("Define net interest margin", [glossary], StubGateway())[0].text == glossary.text
+
+
+def test_multi_bank_preview_and_diff_show_ranks_missing_and_mixed_currency(settings):
+    with TestClient(create_app(settings)) as client:
+        worker = Worker(settings, StubGateway())
+        draft = submit(client, "POST", "/v1/drafts", {"bank": "SYN1"})
+        path = f"/v1/drafts/{draft['id']}"
+        version = submit(client, "POST", f"{path}/save", {"revision": draft["revision"]})
+        baseline = submit(client, "POST", f"/v1/reports/{version['report_id']}/runs", {
+            "version": 1, "period": Q2, "request_key": "peer-baseline",
+        })
+        assert worker.run_one()
+        section = draft["spec"]["sections"][0] | {"bank": None, "banks": ["SYN1-CA", "SYN2-CA"]}
+        for banks, period, expected_reason in (
+            (["SYN1-CA", "SYN2-CA"], Q2, None),
+            (["SYN1-CA", "SYN2-CA"], Q3, "missing_member"),
+            (["SYN1-CA", "SYN3-US"], Q2, "mixed_currencies"),
+        ):
+            section["banks"] = banks
+            draft = submit(client, "PATCH", path, {
+                "revision": version["draft_revision"], "op": "replace_section", "section": section,
+            })
+            version["draft_revision"] = draft["revision"]
+            parameters = {"revision": draft["revision"], "period": period}
+            if period == Q2:
+                parameters["baseline_run_id"] = baseline["id"]
+            run = submit(client, "POST", f"{path}/previews", parameters)
+            assert worker.run_one()
+            result = submit(client, "GET", f"/v1/runs/{run['id']}/output.json")
+            peer = result["sections"][0]["peers"][0]
+            assert peer["reason"] == expected_reason
+            if expected_reason is None:
+                assert peer["median"] == "436.5"
+                assert [(row["bank"], row["rank"]) for row in peer["ranks"]] == [("SYN2-CA", 1), ("SYN1-CA", 2)]
+                assert any(entry["entity"] == "row" and entry["after"]["bank"] == "SYN2-CA"
+                           for entry in result["diff_details"]["entries"] if entry["operation"] == "added")
+            else:
+                assert peer["ranks"] == []

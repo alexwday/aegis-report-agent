@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 import json
 import re
 from collections import defaultdict
@@ -46,6 +49,7 @@ class Bank:
     symbol: str
     name: str
     aliases: tuple[str, ...]
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -120,23 +124,29 @@ class SourceAdapter(Protocol):
 class BankCatalog:
     def list(self, conn: SourceConnection) -> list[Bank]:
         rows = conn.execute("""
-            SELECT bank_id, bank_symbol, bank_name, bank_aliases
+            SELECT bank_id, bank_symbol, bank_name, bank_aliases, bank_tags
             FROM public.aegis_data_availability
             ORDER BY fiscal_year DESC, quarter DESC, id DESC
         """)
         names = {}
         aliases = defaultdict(set)
+        tags = defaultdict(set)
         for row in rows:
             key = (row["bank_id"], row["bank_symbol"])
             names.setdefault(key, row["bank_name"])
             aliases[key].update(alias for alias in (row["bank_aliases"] or []) if alias)
+            tags[key].update(tag for tag in (row["bank_tags"] or []) if tag)
         return [
-            Bank(id_, symbol, names[(id_, symbol)], tuple(sorted(aliases[(id_, symbol)])))
+            Bank(id_, symbol, names[(id_, symbol)], tuple(sorted(aliases[(id_, symbol)])),
+                 tuple(sorted(tags[(id_, symbol)])))
             for id_, symbol in sorted(names, key=lambda key: (key[1], key[0]))
         ]
 
     def resolve(self, conn: SourceConnection, name: str) -> Bank:
-        banks = self.list(conn)
+        return self.match(self.list(conn), name)
+
+    @staticmethod
+    def match(banks: list[Bank], name: str) -> Bank:
         folded = name.strip().casefold()
         exact = [bank for bank in banks if bank.symbol.casefold() == folded]
         matches = exact or [

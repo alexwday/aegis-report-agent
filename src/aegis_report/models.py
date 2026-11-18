@@ -9,6 +9,8 @@ Symbol = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Z
 Offset = Annotated[int, Field(ge=-20, le=0)]
 SectionId = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_-]{0,39}$")]
 Instruction = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
+PeerGroup = Literal["big-6-canadian-banks"]
+BIG_SIX = ("RY-CA", "BMO-CA", "CM-CA", "NA-CA", "BNS-CA", "TD-CA")
 RequestKey = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
 
 
@@ -111,13 +113,20 @@ class TimeScope(StrictModel):
 class SectionSpec(StrictModel):
     id: SectionId
     title: Label
-    bank: Symbol
+    bank: Symbol | None = None
+    banks: list[Symbol] | None = Field(default=None, min_length=1, max_length=12)
+    peer_group: PeerGroup | None = None
     sources: list[SectionInput] = Field(min_length=1, max_length=4)
     kind: Literal["benchmark", "themes", "highlights"] = "benchmark"
     mode: Literal["one_step", "staged"] = "one_step"
     time: TimeScope = Field(default_factory=TimeScope)
     instruction: Instruction
     output_format: Literal["table", "table_with_note", "themes"] = "table_with_note"
+
+    def bank_symbols(self) -> tuple[str, ...]:
+        if self.peer_group:
+            return BIG_SIX
+        return tuple(self.banks or (self.bank,))
 
     @model_validator(mode="before")
     @classmethod
@@ -128,6 +137,10 @@ class SectionSpec(StrictModel):
 
     @model_validator(mode="after")
     def check_sources(self) -> "SectionSpec":
+        if sum(scope is not None for scope in (self.bank, self.banks, self.peer_group)) != 1:
+            raise ValueError("Choose exactly one of bank, banks or peer_group")
+        if self.banks and len(self.banks) != len(set(self.banks)):
+            raise ValueError("Bank symbols in a section must be unique")
         if self.kind == "themes":
             if not any(isinstance(item, EarningsInput) for item in self.sources):
                 raise ValueError("Themes require at least one earnings transcript source")
@@ -164,6 +177,9 @@ class ReportSpec(StrictModel):
         ids = [section.id for section in self.sections]
         if len(set(ids)) != len(ids):
             raise ValueError("Section IDs must be unique")
+        if sum(len(section.bank_symbols()) * len(section.sources) * len(section.time.resolved_offsets())
+               for section in self.sections) > 288:
+            raise ValueError("A report may resolve at most 288 bank-source-period scopes")
         return self
 
 
@@ -181,7 +197,9 @@ class Stage(StrictModel):
 
 def compile_section(section: SectionSpec) -> list[Stage]:
     kinds = [StageKind.RETRIEVE]
-    if section.time.comparison_offset() is not None and any(isinstance(item, BenchmarkInput) for item in section.sources):
+    if (section.time.comparison_offset() is not None or len(section.bank_symbols()) > 1) and any(
+        isinstance(item, BenchmarkInput) for item in section.sources
+    ):
         kinds.append(StageKind.CALCULATE)
     if section.output_format != "table":
         kinds.append(StageKind.DRAFT)

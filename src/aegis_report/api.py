@@ -37,6 +37,7 @@ from .models import (
     compile_section,
 )
 from .pdf_export import render_pdf
+from .peers import PeerStatistics
 from .repository import Reports
 from .sources import (
     BankCatalog,
@@ -123,6 +124,7 @@ class Comparison(StrictModel):
     citation_ids: list[str]
     metric: str | None = None
     segment: str | None = None
+    bank: str | None = None
     provenance: Literal["vendor_qoq", "vendor_yoy", "rounded_actuals"] | None = None
 
 
@@ -137,6 +139,7 @@ class SectionBlocks(StrictModel):
     comparison: Comparison | None
     comparisons: list[Comparison] = Field(default_factory=list)
     claims: list[ThemeClaim] = Field(default_factory=list)
+    peers: list[PeerStatistics] = Field(default_factory=list)
 
 
 class GatheredPassage(StrictModel):
@@ -144,6 +147,7 @@ class GatheredPassage(StrictModel):
     citation: Citation
     period: Period
     topics: list[str]
+    bank: str | None = None
 
 
 class GatherOutput(StrictModel):
@@ -155,6 +159,7 @@ class GatherOutput(StrictModel):
 class CalculationOutput(StrictModel):
     kind: Literal["calculate"]
     comparisons: list[Comparison]
+    peers: list[PeerStatistics] = Field(default_factory=list)
 
 
 class DraftOutput(StrictModel):
@@ -342,7 +347,7 @@ def create_app(settings: Settings | None = None, auth_provider: AuthProvider | N
             raise HTTPException(422, exc.reason) from exc
         if personal_spec is not None:
             spec = personal_spec.model_copy(update={
-                "sections": [section.model_copy(update={"bank": bank.symbol}) for section in personal_spec.sections],
+                "sections": [section.model_copy(update={"bank": bank.symbol, "banks": None, "peer_group": None}) for section in personal_spec.sections],
             })
         else:
             spec = build_system_template(body.template, bank.symbol)

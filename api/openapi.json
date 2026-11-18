@@ -1,0 +1,17 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Aegis Report Agent",
+    "version": "0.0.0",
+    "description": "Phase 0 skeleton. Proposed resources and streaming events are in the architecture plan."
+  },
+  "paths": {},
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

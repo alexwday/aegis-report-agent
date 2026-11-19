@@ -90,6 +90,7 @@ Schedule definitions are owner-scoped, revisioned and pin a saved version and qu
 | G4 Chat | T-013, T-032–T-037 | 4–6 | Document relevance, multi-bank comparisons, typed draft tools, durable turns and replayable SSE. |
 | G5 Handoff | T-014, T-038–T-042 | 4–6 | Developer console and written UI/SSE contract for Functions Assist. |
 | G6 Scheduling | T-015, T-043–T-047 | 5–8 | Toronto default timezone, zero extra maturity lag, 14-day correction window, complete required inputs by default, opt-in provisional publication, retries and concurrency controls. |
-| G7 Hardening | T-016 | 4–7 | Approved retention and authorization wiring, load/cost results, deployment, Compose option and security review. |
+| G7 Reference application | T-048–T-054 | 5–8 | Complete local finance workspace, browser walkthroughs and screenshot-led Functions Assist specifications. |
+| G8 Hardening and handoff | T-016 | 4–7 | Threat model, owner budgets, retention, load and recovery results, deployment and rollback, operational handoff. |
 
-See [questions](../QUESTIONS.md), [decisions](../DECISIONS.md) and the [G7 review list](G7-review.md). Main risks are exact catalog gaps, ambiguous numerical comparisons, late or missed changes, unsupported generation claims and sensitive content in release artifacts.
+See [questions](../QUESTIONS.md), [decisions](../DECISIONS.md) and the [G8 review list](G8-review.md). Main risks are exact catalog gaps, ambiguous numerical comparisons, late or missed changes, unsupported generation claims and sensitive content in release artifacts.

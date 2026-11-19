@@ -1,10 +1,18 @@
 # Aegis Report Agent
 
-A standalone quarterly report builder with chat-based draft editing, peer comparisons, cited document evidence, and HTML, JSON, and PDF exports. The local developer console exercises the Functions Assist integration. G6 adds recurring quarter publication, provisional output, and corrections.
+A standalone quarterly report builder with chat-based draft editing, peer comparisons, cited document evidence, and HTML, JSON, and PDF exports. The finance workspace is the local reference for Functions Assist. It includes recurring quarterly refresh, provisional publication and corrections.
 
-## Try the G6 slice
+## Run the finance workspace
 
 Install `uv` and PostgreSQL server tools with pgvector 0.8.x. Run as an ordinary local user. `pg_config --bindir` must point to the PostgreSQL installation with pgvector.
+
+```sh
+QUIET_SECONDS=1 ./scripts/dev --reference
+```
+
+Open [the finance workspace](http://127.0.0.1:8000/). The fixture includes a deterministic assistant and fabricated bank data. See the [five-task demo and browser screenshot commands](docs/ui/demo.md).
+
+## Run the scripted API demonstration
 
 ```sh
 ./scripts/dev --demo
@@ -14,7 +22,7 @@ The command starts an isolated socket-only Postgres cluster, seeds fabricated ro
 
 To keep the synthetic PDF, run `AEGIS_DEMO_PDF=/path/to/new-report.pdf ./scripts/dev --demo` with a new output path.
 
-Run `./scripts/dev` to keep the fixture stack available until Ctrl-C. Open [the developer console](http://127.0.0.1:8000/console) for reports, templates, draft edits, chat, previews, citations, schedules and exports. It uses the loopback API and bundled local assets. FastAPI documentation is at `/docs`. Set `AEGIS_DEV_PORT` to use another port.
+Run `./scripts/dev` to keep the fixture stack available until Ctrl-C. Open [the finance workspace](http://127.0.0.1:8000/) for normal reporting tasks and [Developer tools](http://127.0.0.1:8000/console) for raw API diagnostics. Both use the loopback API and local assets. FastAPI documentation is at `/docs`. Set `AEGIS_DEV_PORT` to use another port.
 
 ```sh
 ./db/seed/check-local.sh
@@ -46,10 +54,10 @@ Use separate `SOURCE_DATABASE_URL` (SELECT-only) and `RPT_DATABASE_URL` (runtime
 
 ## Integration handoff
 
-[Functions Assist UI specification](docs/integration/functions-assist-ui.md), [API integration guide](docs/integration/api-guide.md), [captured requests and responses](docs/integration/api-examples.md), [operations](docs/integration/operations.md)
+[G7 reference application handoff](docs/ui/README.md), [G5 integration reference](docs/integration/functions-assist-ui.md), [API integration guide](docs/integration/api-guide.md), [captured requests and responses](docs/integration/api-examples.md), [operations](docs/integration/operations.md)
 
 ## Briefing pack and reviews
 
 The [page index](docs/sources/01_index.md) links the 16 original source pages. The [catalog addendum](docs/sources/PACK_v1.1_corrections.md) links the exact R-002 definitions now reflected in the source fixture. Original images and unredacted text stay local. The public briefing and review transcripts mark public-hygiene removals.
 
-The [generated API contract](api/openapi.json), [design](DESIGN.md) and [architecture plan](docs/collab/plans/PLAN.md) describe the current boundary. Use the [collaboration protocol](docs/collab/README.md), [tracker](docs/collab/TRACKER.md), [question log](docs/collab/QUESTIONS.md), [assumptions](docs/collab/ASSUMPTIONS.md) and [decisions](docs/collab/DECISIONS.md). Gate G6 awaits R-007. [S-007](docs/collab/status/S-007.md)
+The [generated API contract](api/openapi.json), [design](DESIGN.md) and [architecture plan](docs/collab/plans/PLAN.md) describe the current boundary. Use the [collaboration protocol](docs/collab/README.md), [tracker](docs/collab/TRACKER.md), [question log](docs/collab/QUESTIONS.md), [assumptions](docs/collab/ASSUMPTIONS.md) and [decisions](docs/collab/DECISIONS.md). Gate G7 awaits R-008. [S-008](docs/collab/status/S-008.md)

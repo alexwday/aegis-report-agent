@@ -47,3 +47,10 @@
 | T-045 | G6 | Add read-only schedule evaluation and operational metrics. | DONE | [Readiness](../../scripts/eval_schedule.py), [metrics](../../scripts/schedule_metrics.py) |
 | T-046 | G6 | Demonstrate automatic quarter roll-forward and document publication semantics. | DONE | [Demo](../../scripts/demo.py), [operations](../integration/operations.md) |
 | T-047 | G6 | Submit S-007 and stop for R-007. | DONE | [S-007](status/S-007.md), `review-007` |
+| T-048 | G7 | Restore complete slide highlights, exclude numbered note lines, and add regressions. | REVIEW | [Claims](../../src/aegis_report/claims.py), [tests](../../tests/test_unit.py), Q-028 |
+| T-049 | G7 | Build the reference shell, report list, template picker, finance canvas and responsive contextual panels. | DONE | [Reference app](../../ui/reference), [screen captures](../ui/screens.md) |
+| T-050 | G7 | Direct-edit sections and review streamed proposals, sources, saved output comparisons and versions. | DONE | [Workspace](../../ui/reference/workspace.js), [migration](../../db/migrations/010_reference_workspace.sql) |
+| T-051 | G7 | Configure automatic quarterly refresh and show timeline, pending sources and provisional export. | DONE | [App](../../ui/reference/app.js), [timeline](../ui/screens.md#schedule-and-help) |
+| T-052 | G7 | Document design assets, exact API usage and five demo tasks. | DONE | [UI handoff](../ui/README.md), [walkthrough](../ui/demo.md) |
+| T-053 | G7 | Run browser smoke at desktop, tablet and phone sizes and generate review screenshots. | DONE | [Browser harness](../../scripts/reference_smoke.cjs), [screens](../ui/screens.md) |
+| T-054 | G7 | Submit S-008 and stop for R-008. | DONE | [S-008](status/S-008.md), `review-008` |

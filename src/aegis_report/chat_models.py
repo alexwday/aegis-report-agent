@@ -108,6 +108,10 @@ class ChatProposal(PatchOperations, DraftEdit):
     pass
 
 
+class ProposalAcceptance(DraftEdit):
+    operations: list[Operation] | None = Field(default=None, min_length=1, max_length=6)
+
+
 class TurnResult(StrictModel):
     id: UUID
     conversation_id: UUID
@@ -118,6 +122,7 @@ class TurnResult(StrictModel):
     applied_revision: int | None = None
     error_code: str | None = None
     last_sequence: int
+    rejected: bool = False
 
 
 class ResolveScope(StrictModel):

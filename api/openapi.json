@@ -363,6 +363,17 @@
       "Citation": {
         "additionalProperties": false,
         "properties": {
+          "bank": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -370,6 +381,16 @@
           "locator": {
             "title": "Locator",
             "type": "string"
+          },
+          "period": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Period"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "source": {
             "$ref": "#/components/schemas/SourceName"
@@ -386,6 +407,17 @@
       "CitationDetail": {
         "additionalProperties": false,
         "properties": {
+          "bank": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank"
+          },
           "excerpt": {
             "title": "Excerpt",
             "type": "string"
@@ -397,6 +429,16 @@
           "locator": {
             "title": "Locator",
             "type": "string"
+          },
+          "period": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Period"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "source": {
             "$ref": "#/components/schemas/SourceName"
@@ -851,24 +893,22 @@
             "minLength": 1,
             "title": "Template",
             "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
           }
         },
         "title": "DraftCreate",
-        "type": "object"
-      },
-      "DraftEdit": {
-        "additionalProperties": false,
-        "properties": {
-          "revision": {
-            "minimum": 1.0,
-            "title": "Revision",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "revision"
-        ],
-        "title": "DraftEdit",
         "type": "object"
       },
       "DraftOutput": {
@@ -991,6 +1031,55 @@
           "spec"
         ],
         "title": "DraftResponse",
+        "type": "object"
+      },
+      "DraftSave": {
+        "additionalProperties": false,
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "revision": {
+            "minimum": 1.0,
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "title": "DraftSave",
+        "type": "object"
+      },
+      "DraftTitle": {
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "minimum": 1.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "title": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision",
+          "title"
+        ],
+        "title": "DraftTitle",
         "type": "object"
       },
       "EarningsInput": {
@@ -1775,6 +1864,80 @@
         "title": "PreviewRequest",
         "type": "object"
       },
+      "ProposalAcceptance": {
+        "additionalProperties": false,
+        "properties": {
+          "operations": {
+            "anyOf": [
+              {
+                "items": {
+                  "discriminator": {
+                    "mapping": {
+                      "add_section": "#/components/schemas/SectionPut",
+                      "remove_section": "#/components/schemas/SectionRemove",
+                      "reorder_sections": "#/components/schemas/SectionReorder",
+                      "replace_section": "#/components/schemas/SectionPut",
+                      "set_banks": "#/components/schemas/BanksEdit",
+                      "set_instruction": "#/components/schemas/InstructionEdit",
+                      "set_mode": "#/components/schemas/ModeEdit",
+                      "set_output_format": "#/components/schemas/FormatEdit",
+                      "set_sources": "#/components/schemas/SourcesEdit",
+                      "set_time": "#/components/schemas/TimeEdit"
+                    },
+                    "propertyName": "op"
+                  },
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/SectionPut"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SectionRemove"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SectionReorder"
+                    },
+                    {
+                      "$ref": "#/components/schemas/BanksEdit"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TimeEdit"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SourcesEdit"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ModeEdit"
+                    },
+                    {
+                      "$ref": "#/components/schemas/FormatEdit"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InstructionEdit"
+                    }
+                  ]
+                },
+                "maxItems": 6,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operations"
+          },
+          "revision": {
+            "minimum": 1.0,
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "title": "ProposalAcceptance",
+        "type": "object"
+      },
       "Readiness": {
         "enum": [
           "ready",
@@ -2268,6 +2431,11 @@
             ],
             "title": "Current Run Id"
           },
+          "first_checked_at": {
+            "format": "date-time",
+            "title": "First Checked At",
+            "type": "string"
+          },
           "generation": {
             "title": "Generation",
             "type": "integer"
@@ -2391,6 +2559,7 @@
           "message",
           "next_check_at",
           "checked_at",
+          "first_checked_at",
           "current_run_id",
           "current_kind",
           "output_url",
@@ -3235,6 +3404,17 @@
       "TemplateResponse": {
         "additionalProperties": false,
         "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -3246,6 +3426,13 @@
             ],
             "title": "Kind",
             "type": "string"
+          },
+          "section_titles": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Section Titles",
+            "type": "array"
           },
           "title": {
             "title": "Title",
@@ -3519,6 +3706,11 @@
               }
             ]
           },
+          "rejected": {
+            "default": false,
+            "title": "Rejected",
+            "type": "boolean"
+          },
           "state": {
             "enum": [
               "queued",
@@ -3588,6 +3780,17 @@
             "title": "Created At",
             "type": "string"
           },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
           "title": {
             "title": "Title",
             "type": "string"
@@ -3600,7 +3803,8 @@
         "required": [
           "version",
           "title",
-          "created_at"
+          "created_at",
+          "note"
         ],
         "title": "VersionResponse",
         "type": "object"
@@ -3856,7 +4060,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/DraftEdit"
+                "$ref": "#/components/schemas/ProposalAcceptance"
               }
             }
           },
@@ -4012,6 +4216,61 @@
           }
         ],
         "summary": "Turn Events"
+      }
+    },
+    "/v1/conversations/{conversation_id}/turns/{turn_id}/reject": {
+      "post": {
+        "operationId": "reject_proposal_v1_conversations__conversation_id__turns__turn_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "turn_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Turn Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TurnResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Reject Proposal"
       }
     },
     "/v1/drafts": {
@@ -4284,7 +4543,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/DraftEdit"
+                "$ref": "#/components/schemas/DraftSave"
               }
             }
           },
@@ -4367,6 +4626,61 @@
           }
         ],
         "summary": "Stages"
+      }
+    },
+    "/v1/drafts/{draft_id}/title": {
+      "patch": {
+        "operationId": "rename_draft_v1_drafts__draft_id__title_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "draft_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Draft Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftTitle"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Rename Draft"
       }
     },
     "/v1/reasons": {

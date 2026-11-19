@@ -197,10 +197,21 @@ class ChatStore:
                 ORDER BY t.created_at DESC, t.id DESC LIMIT 1
             """, (job["conversation_id"], job["owner_key"])).fetchone()
 
-    def accept(self, owner, conversation_id, turn_id, revision):
+    def reject(self, owner, conversation_id, turn_id):
+        with connect(self.dsn) as conn:
+            _, turn = self._turn(conn, owner, conversation_id, turn_id, lock=True)
+            if turn["state"] != "succeeded" or not turn["proposal"] or turn["applied_revision"] is not None:
+                raise HTTPException(409, "proposal_unavailable")
+            if not turn["rejected"]:
+                conn.execute("UPDATE rpt.chat_turns SET rejected = true WHERE id = %s", (turn_id,))
+                turn["last_sequence"] = self._event(conn, turn_id, "patch_rejected")
+                turn["rejected"] = True
+            return self._result(turn)
+
+    def accept(self, owner, conversation_id, turn_id, revision, operations=None):
         with connect(self.dsn) as conn:
             conversation, turn = self._turn(conn, owner, conversation_id, turn_id, lock=True)
-            if turn["state"] != "succeeded" or not turn["proposal"]:
+            if turn["state"] != "succeeded" or not turn["proposal"] or turn["rejected"]:
                 raise HTTPException(409, "proposal_unavailable")
             proposal = ChatProposal.model_validate(turn["proposal"])
             if proposal.revision != revision:
@@ -211,7 +222,7 @@ class ChatStore:
             draft = self.reports._draft(conn, owner, draft_id, lock=True)
             self.reports._assert_revision(draft, revision)
             try:
-                updated = apply_operations(ReportSpec.model_validate(draft["spec"]), proposal.operations)
+                updated = apply_operations(ReportSpec.model_validate(draft["spec"]), operations or proposal.operations)
             except ValueError as exc:
                 raise HTTPException(409, "proposal_operation_conflict") from exc
             saved = self.reports._write_draft(conn, owner, draft_id, updated)

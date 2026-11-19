@@ -4,8 +4,8 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 source scripts/local-db.sh
 
 mode="${1:-}"
-if [[ -n "$mode" && "$mode" != --demo ]]; then
-    echo 'Usage: ./scripts/dev [--demo]' >&2
+if [[ -n "$mode" && "$mode" != --demo && "$mode" != --reference ]]; then
+    echo 'Usage: ./scripts/dev [--demo | --reference]' >&2
     exit 2
 fi
 cleanup() {
@@ -22,8 +22,13 @@ trap 'exit 130' INT TERM
 uv sync --locked
 start_local_db
 export WORKER_POLL_SECONDS="${WORKER_POLL_SECONDS:-0.15}"
-if [[ "$mode" == --demo ]]; then
+unset AEGIS_EXTERNAL_SOURCE
+if [[ "$mode" == --demo || "$mode" == --reference ]]; then
     export SCHEDULE_POLL_SECONDS="${SCHEDULE_POLL_SECONDS:-0.25}"
+fi
+if [[ "$mode" != --demo && -n "${AEGIS_READONLY_SOURCE_DATABASE_URL:-}" ]]; then
+    export SOURCE_DATABASE_URL="$AEGIS_READONLY_SOURCE_DATABASE_URL"
+    export AEGIS_EXTERNAL_SOURCE=1
 fi
 port="${AEGIS_DEV_PORT:-8000}"
 .venv/bin/python -m uvicorn aegis_report.api:app --host 127.0.0.1 --port "$port" --no-access-log > "$fixture_dir/api.log" 2>&1 &
@@ -46,7 +51,8 @@ if (( attempt == 100 )); then
     exit 1
 fi
 echo "Local API and worker ready at http://127.0.0.1:$port"
-echo "Developer console: http://127.0.0.1:$port/console"
+echo "Reference app: http://127.0.0.1:$port/"
+echo "Developer tools: http://127.0.0.1:$port/console"
 if [[ "$mode" == --demo ]]; then
     if [[ -n "${AEGIS_DEMO_PDF:-}" ]]; then
         .venv/bin/python scripts/demo.py "http://127.0.0.1:$port" --automatic-fixture --pdf-output "$AEGIS_DEMO_PDF"

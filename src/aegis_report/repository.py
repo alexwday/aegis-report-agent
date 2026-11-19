@@ -83,6 +83,13 @@ class Reports:
                 raise HTTPException(422, "invalid_tool_arguments_or_patch") from exc
             return self._write_draft(conn, owner, draft_id, spec)
 
+    def rename_draft(self, owner, draft_id, request):
+        with connect(self.dsn) as conn:
+            draft = self._draft(conn, owner, draft_id, lock=True)
+            self._assert_revision(draft, request.revision)
+            spec = ReportSpec.model_validate(draft["spec"] | {"title": request.title})
+            return self._write_draft(conn, owner, draft_id, spec)
+
     def _write_draft(self, conn, owner, draft_id, spec):
         return conn.execute("""
             UPDATE rpt.drafts SET spec = %s, revision = revision + 1 WHERE id = %s AND owner_key = %s
@@ -155,7 +162,7 @@ class Reports:
         with connect(self.dsn) as conn:
             self._report(conn, owner, report_id)
             return conn.execute("""
-                SELECT version, spec->>'title' AS title, created_at FROM rpt.report_versions
+                SELECT version, spec->>'title' AS title, created_at, note FROM rpt.report_versions
                 WHERE report_id = %s ORDER BY version DESC LIMIT %s OFFSET %s
             """, (report_id, limit, offset)).fetchall()
 
@@ -179,17 +186,18 @@ class Reports:
             self._insert_version(conn, clone["id"], 1, spec | {"title": title})
             return clone
 
-    def _insert_version(self, conn, report_id, version, spec):
+    def _insert_version(self, conn, report_id, version, spec, note=None):
         conn.execute("""
-            INSERT INTO rpt.report_versions (report_id, version, spec) VALUES (%s, %s, %s)
-        """, (report_id, version, Jsonb(spec)))
+            INSERT INTO rpt.report_versions (report_id, version, spec, note) VALUES (%s, %s, %s, %s)
+        """, (report_id, version, Jsonb(spec), note))
 
     def list_personal_templates(self, owner: bytes):
         with connect(self.dsn) as conn:
-            return conn.execute("""
-                SELECT id::text AS id, title, 'personal' AS kind FROM rpt.personal_templates
+            rows = conn.execute("""
+                SELECT id::text AS id, title, 'personal' AS kind, spec FROM rpt.personal_templates
                 WHERE owner_key = %s ORDER BY created_at DESC, id DESC
             """, (owner,)).fetchall()
+        return [row | {"section_titles": [section["title"] for section in row.pop("spec")["sections"]]} for row in rows]
 
     def get_personal_template(self, owner: bytes, template_id: str):
         try:
@@ -210,12 +218,13 @@ class Reports:
             snapshot = self._report_version(
                 conn, owner, request.report_id, request.version or report["head"], active=False,
             )["spec"] | {"title": request.title}
-            return conn.execute("""
+            row = conn.execute("""
                 INSERT INTO rpt.personal_templates (id, owner_key, title, spec) VALUES (%s, %s, %s, %s)
                 RETURNING id::text AS id, title, 'personal' AS kind
             """, (uuid4(), owner, request.title, Jsonb(snapshot))).fetchone()
+            return row | {"section_titles": [section["title"] for section in snapshot["sections"]]}
 
-    def save(self, owner: bytes, draft_id: UUID, revision: int):
+    def save(self, owner: bytes, draft_id: UUID, revision: int, note: str | None = None):
         with connect(self.dsn) as conn:
             draft = self._draft(conn, owner, draft_id, lock=True)
             self._assert_revision(draft, revision)
@@ -234,7 +243,7 @@ class Reports:
                 if latest is None:
                     raise HTTPException(409, "stale_or_archived_report")
                 version = latest["head"]
-            self._insert_version(conn, report_id, version, draft["spec"])
+            self._insert_version(conn, report_id, version, draft["spec"], note or None)
             conn.execute("""
                 UPDATE rpt.drafts SET report_id = %s, base_version = %s, head_at_start = %s, revision = revision + 1
                 WHERE id = %s AND owner_key = %s
@@ -324,7 +333,7 @@ class Reports:
                        coalesce(p.reason, CASE WHEN p.status = 'ready_to_run' THEN r.error_code END) AS reason,
                        CASE WHEN p.status = 'published' AND p.correction_until < now()
                             THEN NULL ELSE p.next_check_at END AS next_check_at,
-                       p.checked_at, p.current_run_id, p.current_kind, p.published_at,
+                       p.checked_at, p.first_checked_at, p.current_run_id, p.current_kind, p.published_at,
                        p.correction_until, p.last_correction, p.readiness
                 FROM rpt.schedule_periods p LEFT JOIN rpt.runs r ON r.id = p.latest_run_id
                 WHERE p.report_id = %s

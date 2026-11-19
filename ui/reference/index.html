@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Aegis quarterly report workspace for finance teams">
+  <title>Aegis · Financial reporting</title>
+  <link rel="stylesheet" href="/reference/tokens.css">
+  <link rel="stylesheet" href="/reference/app.css">
+  <script type="module" src="/reference/app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to workspace</a>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="#reports"><span class="brand-symbol" aria-hidden="true"><i></i><i></i><i></i></span><span>Aegis <small>Financial reporting</small></span></a>
+      <nav aria-label="Main navigation" id="navigation">
+        <a href="#reports" data-view="reports"><span aria-hidden="true">▤</span>Reports</a>
+        <a href="#templates" data-view="templates"><span aria-hidden="true">◫</span>Templates</a>
+        <a href="#schedules" data-view="schedules"><span aria-hidden="true">◷</span>Schedules and status</a>
+        <a href="#help" data-view="help"><span aria-hidden="true">⊙</span>Help</a>
+      </nav>
+      <div class="sidebar-foot"><a href="/console">Developer tools</a><div class="identity-card"><span class="avatar" aria-hidden="true">FD</span><div><strong>Finance workspace</strong><small id="data-label">Local demo data</small></div></div></div>
+    </aside>
+    <div class="page">
+      <header class="topbar">
+        <div id="breadcrumbs">Reports</div>
+        <div class="top-actions" id="top-actions"></div>
+      </header>
+      <div class="notice-slot" id="notice-slot"><p role="status" id="notice" class="notice" hidden></p><p role="alert" id="error" class="notice alert" hidden></p></div>
+      <main id="main" tabindex="-1"><div class="loading card" aria-busy="true">Loading your workspace…</div></main>
+    </div>
+  </div>
+  <dialog id="dialog" aria-labelledby="dialog-title"><div id="dialog-content"></div></dialog>
+</body>
+</html>

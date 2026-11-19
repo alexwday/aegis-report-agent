@@ -8,6 +8,20 @@ def plan_stub(message: str, spec: ReportSpec) -> list[tuple[str, dict]]:
     text = message.casefold()
     matched = [item for item in spec.sections if item.id in text or item.title.casefold() in text]
     target = max(matched, key=lambda item: len(item.title)) if matched else spec.sections[0]
+    if re.search(r"\b(?:build|prepare|draft)\b.*\breport\b", text):
+        setup = new_section(text, target)
+        if setup:
+            operations = []
+            if setup["id"] == target.id:
+                operations.append({"op": "set_banks", "section_id": target.id,
+                                   **{key: setup[key] for key in ("banks", "peer_group") if key in setup}})
+                if "four quarters" in text:
+                    setup["time"] = {"preset": {"kind": "trailing_quarters", "count": 4}}
+                if "time" in setup:
+                    operations.append({"op": "set_time", "section_id": target.id, "time": setup["time"]})
+            else:
+                operations.append({"op": "add_section", "section": setup})
+            return [("propose_patch", {"operations": operations})]
     if re.search(r"\b(?:add|create|insert)\b", text):
         section = new_section(text, target)
         if section:
@@ -38,7 +52,7 @@ def plan_stub(message: str, spec: ReportSpec) -> list[tuple[str, dict]]:
         return patch("set_banks", target, banks=banks)
     if "current quarter" in text and ("only" in text or "just" in text):
         return patch("set_time", target, time={"offsets": [0]})
-    if "same quarter last year" in text or "year over year" in text:
+    if "same quarter last year" in text or "year over year" in text or re.search(r"\bcompare(?:d)? (?:with|to) last year\b", text):
         return patch("set_time", target, time={"compare": "prior_year"})
     if "prior quarter" in text or "previous quarter" in text:
         return patch("set_time", target, time={"compare": "prior_quarter"})

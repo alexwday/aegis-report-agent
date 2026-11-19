@@ -78,6 +78,7 @@ class SlideSource:
                 heading=row["name"],
                 citation=Citation(
                     source=SourceName.SLIDES,
+                    period=scope.period, bank=scope.bank.symbol,
                     id=opaque_id(SourceName.SLIDES, row["file_path"], row["file_hash"],
                                  row["page_number"], row["chunk_id"]),
                     locator=f"Investor slides · {scope.bank.symbol} · {scope.period} · page {row['page_number']}",
@@ -198,6 +199,7 @@ class RtsSource:
                 following = FollowingChunk(
                     text=row["next_text"], citation=Citation(
                         source=SourceName.RTS,
+                        period=scope.period, bank=scope.bank.symbol,
                         id=opaque_id(*reference, row["next_created_at"], row["chunk_id"] + 1),
                         locator=f"{locator} · chunks {row['chunk_id']}–{row['chunk_id'] + 1}",
                     ),
@@ -207,7 +209,8 @@ class RtsSource:
                 topics=scope.topics or scope.terms[:1], terms=scope.terms, distance=row["distance"], relevance=row["rank"],
                 heading=" > ".join(filter(None, (row["source_section"], row["summary_title"]))),
                 begins_mid_sentence=mid_sentence, following=following,
-                citation=Citation(source=SourceName.RTS, id=opaque_id(*reference), locator=locator),
+                citation=Citation(source=SourceName.RTS, id=opaque_id(*reference), locator=locator,
+                                  period=scope.period, bank=scope.bank.symbol),
             ))
         return passages
 

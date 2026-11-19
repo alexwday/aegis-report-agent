@@ -25,7 +25,16 @@ SYSTEM_TEMPLATES = {
 
 
 def template_index() -> list[dict]:
-    return [{"id": key, "title": title, "kind": "system"} for key, (title, _) in SYSTEM_TEMPLATES.items()]
+    descriptions = {
+        "quarterly-earnings": "Track reported net income and inspect the source behind each figure.",
+        "credit-watch": "Review credit quality disclosures and quarter-over-quarter efficiency.",
+        "margin-and-capital": "Bring earnings commentary and investor slides into one brief.",
+    }
+    return [
+        {"id": key, "title": title, "kind": "system", "description": descriptions[key],
+         "section_titles": [section["title"] for section in sections]}
+        for key, (title, sections) in SYSTEM_TEMPLATES.items()
+    ]
 
 
 def build_system_template(template_id: str, bank: str) -> ReportSpec:

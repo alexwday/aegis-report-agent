@@ -71,6 +71,14 @@ FROM generate_series(2087, 2089) AS history(year_number)
 CROSS JOIN (VALUES ('Q2'), ('Q3')) AS quarters(quarter_label)
 WHERE (year_number, quarter_label) <> (2088, 'Q3');
 
+-- Historical observations for the browser trend demo; FY2090 Q4 remains intentionally absent.
+INSERT INTO public.benchmarking_report
+    (bank, bank_symbol, "Parameter", "Platform", fiscal_year, quarter, "Actual", updated_at, filepath)
+VALUES
+    ('SYN1', 'SYN1-CA', 'Net Income', 'Enterprise', 2089, 'Q4', 417, timestamp '2090-10-01', 'synthetic/benchmarking.csv'),
+    ('SYN2', 'SYN2-CA', 'Net Income', 'Enterprise', 2089, 'Q3', 415, timestamp '2090-10-01', 'synthetic/benchmarking.csv'),
+    ('SYN2', 'SYN2-CA', 'Net Income', 'Enterprise', 2089, 'Q4', 423, timestamp '2090-10-01', 'synthetic/benchmarking.csv');
+
 -- Real identifiers are excluded; the synthetic relative paths exercise the documented naming pattern.
 
 

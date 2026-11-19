@@ -964,6 +964,12 @@ def test_local_console_identity_switch_and_manual_section_operations(settings):
     with TestClient(create_app(settings)) as client, TestClient(
         create_app(settings, LocalAuth("other"))
     ) as protected:
+        reference = client.get("/")
+        assert reference.is_success and "Financial reporting" in reference.text
+        assert "default-src 'none'" in reference.headers["content-security-policy"]
+        assert client.get("/reference/workspace.js").is_success
+        assert protected.get("/").status_code == 404
+        assert client.get("/reference/unknown.js").status_code == 404
         console = client.get("/console")
         assert console.is_success and "Developer console" in console.text
         assert "default-src 'none'" in console.headers["content-security-policy"]
@@ -984,8 +990,15 @@ def test_local_console_identity_switch_and_manual_section_operations(settings):
         changed = submit(client, "PATCH", path + "/operations", patch_body)
         assert changed["spec"]["sections"][0]["mode"] == "staged"
         assert client.patch(path + "/operations", json=patch_body).status_code == 409
+        assert client.patch(path + "/title", headers=other, json={"revision": 2, "title": "Research"}).status_code == 404
+        changed = submit(client, "PATCH", path + "/title", {"revision": 2, "title": "Research"})
+        saved = submit(client, "POST", path + "/save", {"revision": changed["revision"], "note": "Validated first pass"})
+        version_path = f"/v1/reports/{saved['report_id']}/versions"
+        version, = submit(client, "GET", version_path)
+        assert version["title"] == "Research" and version["note"] == "Validated first pass"
+        assert client.get(version_path, headers=other).status_code == 404
         stub = submit(client, "POST", path + "/previews", {
-            "revision": changed["revision"], "period": Q2, "section_id": "net-income", "stop_after": "gather",
+            "revision": saved["draft_revision"], "period": Q2, "section_id": "net-income", "stop_after": "gather",
         })
         assert Worker(settings, StubGateway()).run_one()
         output = submit(client, "GET", f"/v1/runs/{stub['id']}/output.json")
@@ -1013,6 +1026,41 @@ def test_chat_acceptance_conflict_for_stored_operations_and_matching_revision(se
         assert response.status_code == 409
         assert response.json()["detail"] == "proposal_operation_conflict"
         assert submit(client, "GET", f"/v1/drafts/{draft['id']}")["revision"] == 1
+
+
+def test_rejecting_chat_proposal_is_owner_scoped_idempotent_and_blocks_acceptance(settings):
+    from aegis_report.chat_agent import ChatAgent
+
+    with TestClient(create_app(settings)) as client, TestClient(
+        create_app(settings, LocalAuth("different-proposal-owner"))
+    ) as outsider:
+        draft = submit(client, "POST", "/v1/drafts", {"bank": "SYN1"})
+        conversation = submit(client, "POST", "/v1/conversations", {"draft_id": draft["id"], "period": Q2})
+        base = f"/v1/conversations/{conversation['id']}/turns"
+        turn = submit(client, "POST", base, {"message": "Make Net income staged.", "request_key": "reject"})
+        assert ChatAgent(settings, StubGateway()).run_one()
+        path = f"{base}/{turn['id']}"
+        assert outsider.post(path + "/reject").status_code == 404
+        rejected = submit(client, "POST", path + "/reject")
+        assert rejected["rejected"] and rejected["applied_revision"] is None
+        assert submit(client, "GET", path)["rejected"]
+        assert submit(client, "POST", path + "/reject")["last_sequence"] == rejected["last_sequence"]
+        assert client.post(path + "/accept", json={"revision": 1}).status_code == 409
+        assert submit(client, "GET", f"/v1/drafts/{draft['id']}")["revision"] == 1
+
+        turn = submit(client, "POST", base, {"message": "Make Net income staged.", "request_key": "edit"})
+        assert ChatAgent(settings, StubGateway()).run_one()
+        path = f"{base}/{turn['id']}/accept"
+        edit = {"revision": 1, "operations": [
+            {"op": "set_output_format", "section_id": "net-income", "output_format": "table"},
+        ]}
+        assert outsider.post(path, json=edit).status_code == 404
+        applied = submit(client, "POST", path, edit)
+        assert submit(client, "POST", path, edit) == applied
+        updated = submit(client, "GET", f"/v1/drafts/{draft['id']}")
+        assert updated["revision"] == 2
+        section, = updated["spec"]["sections"]
+        assert section["mode"] == "one_step" and section["output_format"] == "table"
 
 
 def scheduled_report(client, *, period=Q2, banks=None, provisional=None):

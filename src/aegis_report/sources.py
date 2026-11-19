@@ -41,6 +41,8 @@ class Citation(StrictModel):
     id: str
     source: SourceName
     locator: str
+    period: Period | None = None
+    bank: str | None = None
 
 
 @dataclass(frozen=True)
@@ -245,6 +247,7 @@ class BenchmarkingSource:
             id=opaque_id("benchmarking", row["filepath"], row["updated_at"], scope.bank.symbol,
                          str(scope.period), row["metric"], row["segment"]),
             source=SourceName.BENCHMARKING,
+            period=scope.period, bank=scope.bank.symbol,
             locator=f"Derived dataset · snapshot {row['updated_at'] or 'undated'} · "
                     f"{scope.bank.symbol} · {row['metric']} · {row['segment']} · {scope.period}",
         )
@@ -398,6 +401,7 @@ class EarningsSource:
                 citation=Citation(id=opaque_id("legacy", scope.bank.symbol, edition["event_id"],
                                                edition["version_id"], edition["latest"], coordinates),
                                   source=SourceName.EARNINGS,
+                                  period=scope.period, bank=scope.bank.symbol,
                                   locator=f"{row['title'] or 'Earnings call'} · {row['section_name']} · "
                                           f"speaker block {row['speaker_block_id']} · chunk {row['chunk_id']}"),
             ))
@@ -430,6 +434,7 @@ class EarningsSource:
                 citation=Citation(id=opaque_id("unified", identity, edition["file_id"], edition["file_hash"],
                                                row["chunk_id"]),
                                   source=SourceName.EARNINGS,
+                                  period=scope.period, bank=scope.bank.symbol,
                                   locator=f"{row['name'] or 'Earnings call'} · sequence {row['page_number']} · "
                                           f"{row['chunk_id']}"),
             )

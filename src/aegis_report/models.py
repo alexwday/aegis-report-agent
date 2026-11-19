@@ -215,6 +215,7 @@ def compile_section(section: SectionSpec) -> list[Stage]:
 class DraftCreate(StrictModel):
     template: Label = "quarterly-earnings"
     bank: Label | None = None
+    title: Label | None = None
 
 
 class DraftPatch(StrictModel):
@@ -225,6 +226,14 @@ class DraftPatch(StrictModel):
 
 class DraftEdit(StrictModel):
     revision: int = Field(ge=1)
+
+
+class DraftTitle(DraftEdit):
+    title: Label
+
+
+class DraftSave(DraftEdit):
+    note: Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] | None = None
 
 
 class PreviewRequest(DraftEdit):

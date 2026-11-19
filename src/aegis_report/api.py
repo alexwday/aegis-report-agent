@@ -1,4 +1,5 @@
 import json
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +16,15 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import Field
 
 from .auth import AuthProvider, CurrentUser, LocalAuth, UpstreamAuth
-from .chat_models import TERMINAL, ChatProposal, Conversation, ConversationCreate, TurnCreate, TurnResult
+from .chat_models import (
+    TERMINAL,
+    ChatProposal,
+    Conversation,
+    ConversationCreate,
+    ProposalAcceptance,
+    TurnCreate,
+    TurnResult,
+)
 from .chat_store import ChatStore
 from .claims import ThemeClaim
 from .config import Settings
@@ -25,8 +34,9 @@ from .documents import build_sources
 from .engine import render_html
 from .models import (
     DraftCreate,
-    DraftEdit,
     DraftPatch,
+    DraftSave,
+    DraftTitle,
     Period,
     PreviewRequest,
     ReportClone,
@@ -59,6 +69,8 @@ from .templates import SYSTEM_TEMPLATES, build_system_template, template_index
 
 bearer = HTTPBearer(auto_error=False)
 CONSOLE = Path(__file__).resolve().parents[2] / "ui"
+REFERENCE = CONSOLE / "reference"
+REFERENCE_ASSETS = {"index.html", "tokens.css", "app.css", "app.js", "api.js", "components.js", "workspace.js"}
 CONSOLE_CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
                "base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
 
@@ -253,6 +265,8 @@ class TemplateResponse(StrictModel):
     id: str
     title: str
     kind: Literal["system", "personal"]
+    description: str | None = None
+    section_titles: list[str] = Field(default_factory=list)
 
 
 class ReportResponse(StrictModel):
@@ -267,6 +281,7 @@ class VersionResponse(StrictModel):
     version: int
     title: str
     created_at: datetime
+    note: str | None
 
 
 class ScheduleResponse(StrictModel):
@@ -313,6 +328,7 @@ class SchedulePeriodStatus(StrictModel):
     message: str | None
     next_check_at: datetime | None
     checked_at: datetime
+    first_checked_at: datetime
     current_run_id: UUID | None
     current_kind: Literal["complete", "provisional"] | None
     output_url: str | None
@@ -378,12 +394,23 @@ def create_app(settings: Settings | None = None, auth_provider: AuthProvider | N
     def health():
         return Status()
 
+    @api.get("/", include_in_schema=False)
+    @api.get("/reference/{asset}", include_in_schema=False)
+    def local_reference(request: Request, asset: str = "index.html"):
+        if not request.app.state.local_identities or asset not in REFERENCE_ASSETS:
+            raise HTTPException(404)
+        return FileResponse(REFERENCE / asset, headers={
+            "Cache-Control": "no-store", "Content-Security-Policy": CONSOLE_CSP,
+            "X-Content-Type-Options": "nosniff",
+        })
+
     @api.get("/console/context", include_in_schema=False)
     def console_context(request: Request):
         ids = request.app.state.local_identities
         if not ids:
             raise HTTPException(404)
-        return JSONResponse({"identities": ids}, headers={"Cache-Control": "no-store"})
+        return JSONResponse({"identities": ids, "source_mode": "configured" if os.getenv("AEGIS_EXTERNAL_SOURCE") else "fixture"},
+                            headers={"Cache-Control": "no-store"})
 
     @api.get("/console", include_in_schema=False)
     @api.get("/console/{asset}", include_in_schema=False)
@@ -434,7 +461,7 @@ def create_app(settings: Settings | None = None, auth_provider: AuthProvider | N
             raise HTTPException(422, "system_template_requires_bank")
         personal_spec = reports.get_personal_template(owner, body.template) if not is_system else None
         if body.bank is None and personal_spec is not None:
-            return reports.create_draft(owner, personal_spec)
+            return reports.create_draft(owner, personal_spec.model_copy(update={"title": body.title or personal_spec.title}))
         try:
             with connect(request.app.state.settings.source_dsn, source=True) as conn:
                 bank = request.app.state.catalog.resolve(conn, body.bank)
@@ -446,7 +473,7 @@ def create_app(settings: Settings | None = None, auth_provider: AuthProvider | N
             })
         else:
             spec = build_system_template(body.template, bank.symbol)
-        return reports.create_draft(owner, spec)
+        return reports.create_draft(owner, spec.model_copy(update={"title": body.title or spec.title}))
 
     @api.get("/v1/drafts/{draft_id}", response_model=DraftResponse)
     def get_draft(draft_id: UUID, owner: OwnerKey, reports: Storage):
@@ -455,6 +482,10 @@ def create_app(settings: Settings | None = None, auth_provider: AuthProvider | N
     @api.patch("/v1/drafts/{draft_id}", response_model=DraftResponse)
     def patch_draft(draft_id: UUID, body: DraftPatch, owner: OwnerKey, reports: Storage):
         return reports.patch(owner, draft_id, body)
+
+    @api.patch("/v1/drafts/{draft_id}/title", response_model=DraftResponse)
+    def rename_draft(draft_id: UUID, body: DraftTitle, owner: OwnerKey, reports: Storage):
+        return reports.rename_draft(owner, draft_id, body)
 
     @api.patch("/v1/drafts/{draft_id}/operations", response_model=DraftResponse)
     def apply_draft_operations(draft_id: UUID, body: ChatProposal, owner: OwnerKey, reports: Storage):
@@ -479,8 +510,12 @@ def create_app(settings: Settings | None = None, auth_provider: AuthProvider | N
         return request.app.state.chat.cancel(owner, conversation_id, turn_id)
 
     @api.post(turn_path + "/accept", response_model=AppliedProposal)
-    def accept_proposal(conversation_id: UUID, turn_id: UUID, body: DraftEdit, owner: OwnerKey, request: Request):
-        return request.app.state.chat.accept(owner, conversation_id, turn_id, body.revision)
+    def accept_proposal(conversation_id: UUID, turn_id: UUID, body: ProposalAcceptance, owner: OwnerKey, request: Request):
+        return request.app.state.chat.accept(owner, conversation_id, turn_id, body.revision, body.operations)
+
+    @api.post(turn_path + "/reject", response_model=TurnResult)
+    def reject_proposal(conversation_id: UUID, turn_id: UUID, owner: OwnerKey, request: Request):
+        return request.app.state.chat.reject(owner, conversation_id, turn_id)
 
     @api.get(turn_path + "/events", response_class=StreamingResponse, responses={
         200: {"content": {"text/event-stream": {"schema": {"type": "string"}}}},
@@ -519,8 +554,8 @@ def create_app(settings: Settings | None = None, auth_provider: AuthProvider | N
         return [CompiledSection(section_id=section.id, stages=compile_section(section)) for section in spec.sections]
 
     @api.post("/v1/drafts/{draft_id}/save", response_model=SavedVersion, status_code=201)
-    def save(draft_id: UUID, body: DraftEdit, owner: OwnerKey, reports: Storage):
-        return reports.save(owner, draft_id, body.revision)
+    def save(draft_id: UUID, body: DraftSave, owner: OwnerKey, reports: Storage):
+        return reports.save(owner, draft_id, body.revision, body.note)
 
     @api.get("/v1/reports", response_model=list[ReportResponse])
     def list_reports(owner: OwnerKey, reports: Storage, archived: bool = False,

@@ -41,4 +41,4 @@
 | T-039 | G5 | Use KPI metadata to rank peers, show unknown direction and list missing banks. | DONE | [Peer calculation](../../src/aegis_report/peers.py), [evaluator](../../scripts/eval_peers.py) |
 | T-040 | G5 | Add per-call real model credentials hook and shared reason wording. | DONE | [Evaluation guide](../integration/evaluation.md), [catalog](../../src/aegis_report/reasons.py) |
 | T-041 | G5 | Deliver API guide, captured examples, operations notes and revised demo. | DONE | [Guide](../integration/api-guide.md), [examples](../integration/api-examples.md) |
-| T-042 | G5 | Submit S-006 and wait at G5 for R-006. | REVIEW | [S-006](status/S-006.md), `review-006` |
+| T-042 | G5 | Submit S-006 and wait at G5 for R-006. | DONE | [S-006](status/S-006.md), `review-006` |

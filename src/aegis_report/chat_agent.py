@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import timedelta
 from random import uniform
 from time import monotonic, sleep
@@ -20,6 +21,7 @@ from .repository import Reports
 from .sources import BankCatalog, Passage, Scope, SourceIssue
 from .stub_planner import plan_stub
 
+logger = logging.getLogger(__name__)
 MAX_TOOL_CALLS = 7
 MAX_MODEL_TOKENS = 5600
 TURN_SECONDS = DEFAULT_CHAT_TURN_SECONDS
@@ -61,6 +63,7 @@ def planning_step(gateway, messages, tools, allocation, deadline, call_seconds):
             delay = uniform(0.15, 0.45)
             if deadline - monotonic() <= delay + 0.1:
                 raise GatewayError("turn_time_limit") from None
+            logger.info("chat_plan_retry delay_seconds=%.3f", delay)
             sleep(delay)
 
 

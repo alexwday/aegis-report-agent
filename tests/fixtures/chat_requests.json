@@ -19,7 +19,7 @@
   {"request":"Change Net income to the Big 6 Canadian banks.","operation":{"op":"set_banks","section_id":"net-income","peer_group":"big-6-canadian-banks"}},
   {"request":"Compare SYN1-CA and SYN2-CA in Net income.","operation":{"op":"set_banks","section_id":"net-income","banks":["SYN1-CA","SYN2-CA"]}},
   {"request":"Add an Efficiency Ratio section.","operation":{"op":"add_section","section":{"sources":[{"metric":"Efficiency Ratio"}]}}},
-  {"request":"What changed since the saved version?","tool":"explain_diff"},
+  {"request":"What changed since the saved version?","tool":"explain_diff","also_compare_preview":true},
   {"request":"Preview the draft against the saved version.","tool":"start_preview"},
   {"request":"Can I see the Net income source coverage?","tool":"inspect_coverage"},
   {"request":"Find evidence for Margin slides.","tool":"search_evidence"},

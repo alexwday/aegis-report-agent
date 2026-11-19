@@ -41,11 +41,12 @@ def includes(actual, expected):
 
 def evaluate_case(case, gateway):
     calls, edits = [], []
+    compared_preview = False
     final = None
     unchanged = False
 
     def invoke(name, data):
-        nonlocal unchanged
+        nonlocal unchanged, compared_preview
         if name not in TOOL_MODELS:
             return {"error": "tool_not_allowed"}
         try:
@@ -70,6 +71,7 @@ def evaluate_case(case, gateway):
         if name == "explain_diff":
             return {"summary": {"added": ["synthetic-margin"], "removed": [], "changed": []}, "entry_count": 1}
         if name == "start_preview":
+            compared_preview = args.compare_saved
             return {"preview_id": "00000000-0000-0000-0000-000000000001", "state": "queued"}
         if name == "search_evidence":
             return {"state": "ready", "authority": "untrusted_source_data", "evidence": [{
@@ -91,7 +93,7 @@ def evaluate_case(case, gateway):
         return not edits and bool(unchanged or acknowledged)
     if "operation" in case:
         return len(edits) == 1 and includes(edits[0], case["operation"])
-    return case["tool"] in calls and not edits
+    return (case["tool"] in calls or (case.get("also_compare_preview") and compared_preview)) and not edits
 
 
 def main():

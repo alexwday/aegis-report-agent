@@ -325,6 +325,50 @@ def test_document_rebuilds_highlight_bullets_and_preserves_exact_normalized_quot
     assert claim.evidence_ids == ["credit-slide"]
 
 
+def test_slide_highlights_accept_closed_unpunctuated_units_and_reject_chunk_fragments():
+    from aegis_report.claims import candidates_for
+
+    row = Passage(bank="SYN1-CA", period=Period(year=2090, quarter=3),
+                  topics=("Net Interest Income & Margins",), citation=Citation(
+                      id="margin-slide", source=SourceName.SLIDES, locator="Fixture slide · page 8"),
+                  text=("earnings and net interest margin fell 40 bps in the prior\n"
+                        "## Quarterly highlights\n"
+                        "- Net interest margin fell 6 bps as customer deposits repriced during the quarter\n"
+                        "- Net interest income grew 9% as customer balances increased across retail portfolios\n"
+                        "## Period comparison\n"
+                        "Net interest income increased 5% after lower interest expense in the retail business\n"
+                        "| Net interest income increased 50% in the prior quarter |\n"
+                        "- Net interest margin increased 9 bps after the"))
+    pool = candidates_for([row], "Show net interest income and margins")
+    assert {item.text for item in pool} == {
+        "Net interest margin fell 6 bps as customer deposits repriced during the quarter",
+        "Net interest income grew 9% as customer balances increased across retail portfolios",
+        "Net interest income increased 5% after lower interest expense in the retail business",
+    }
+    claims = draft_themes("Show net interest income and margins", [row], StubGateway())
+    assert len(claims) >= 2
+    assert all((claim.source_text or claim.text) in {item.text for item in pool} for claim in claims)
+    assert all(claim.evidence_ids == ["margin-slide"] for claim in claims)
+
+
+def test_report_document_filters_note_markers_unless_explicitly_requested():
+    from aegis_report.claims import candidates_for
+
+    row = Passage(bank="SYN1-CA", period=Period(year=2090, quarter=2),
+                  topics=("Credit Quality & Provisions",), citation=Citation(
+                      id="credit-document", source=SourceName.RTS, locator="Fixture report · page 6"),
+                  text=("The provision for credit losses fell by $42 million this quarter.\n"
+                        "2 Includes $39 billion of personal credit lines and cards in the retail portfolio.\n"
+                        "(1) Calculated using the provision for credit losses of $12 million.\n"
+                        "[3] Excludes $72 million of credit provisions from the prior quarter.\n"
+                        "<sup>4</sup> Includes $12 million in the allowance for credit losses."))
+    assert [item.text for item in candidates_for([row], "Explain credit quality")] == [
+        "The provision for credit losses fell by $42 million this quarter.",
+    ]
+    notes = candidates_for([row], "Show footnotes for the credit disclosures")
+    assert len(notes) == 5
+
+
 def test_themes_require_sentence_topic_and_reject_abbreviation_fragments():
     from aegis_report.claims import candidates_for
     from aegis_report.gateway import StubGateway

@@ -30,7 +30,7 @@ WORD = re.compile(r"\b[\w'-]+\b")
 FOCUS_STOP = {"about", "from", "highlight", "show", "include", "identify", "quote", "claims", "topic", "the", "for",
               "report", "with", "cited", "evidence", "and", "financial", "context", "recent"}
 DOCUMENT_SOURCE = {SourceName.SLIDES, SourceName.RTS}
-DEFINITION_REQUEST = re.compile(r"\b(?:define|definitions?|what is|what does .{1,60} mean|meaning of|glossary)\b", re.I)
+DEFINITION_REQUEST = re.compile(r"\b(?:define|definitions?|what is|what does .{1,60} mean|meaning of|glossary|footnotes?)\b", re.I)
 REFERENCE_HEADING = re.compile(
     r"(?:^|[>:/–—-] ?)(?:[ #*_]*)(?:glossary|definitions?|endnotes?|footnotes?|notes(?: to|$)|"
     r"non.gaap|legal|forward.looking|disclaimer)\b", re.I,
@@ -49,6 +49,14 @@ ABBREVIATION = re.compile(
     r"jun|jul|aug|sep|sept|oct|nov|dec))\.$", re.I,
 )
 BULLET = re.compile(r"^(?P<indent>[ \t]*)(?:[-*+•▪◦‣–—]\s+|\d{1,2}[.)]\s+)")
+NOTE_LINE = re.compile(
+    r"^\s*(?:\(\d{1,2}\)|\[\d{1,2}\]|[†‡⁰¹²³⁴⁵⁶⁷⁸⁹]+|<sup[^>]*>\s*\d{1,2}\s*</sup>|"
+    r"\d{1,2}\s+(?!(?:basis points|bps?|million|billion|percent)\b)(?=[a-z]))", re.I,
+)
+SLIDE_BOUNDARY = re.compile(r"^\s*(?:#{1,6}\s+|[|]|</?(?:table|figure)\b)")
+DANGLING_BULLET = re.compile(
+    r"(?:[,;:–—(/-]|[.!?]{2,}|\b(?:and|or|but|to|of|with|for|by|from|in|the|a|an|as|including))$", re.I,
+)
 FOOTNOTE = re.compile(r"<sup[^>]*>\s*\d+\s*</sup>|[⁰¹²³⁴⁵⁶⁷⁸⁹]+|(?:\*{1,3}|_{1,3})?\[\d{1,2}\]", re.I)
 FUSED_YEAR = re.compile(
     r"(\b(?:fiscal(?: year)?\s+|FY)(?:19|20|21)\d{2})(?:[1-9]\d?(?=\W|$)|"
@@ -89,9 +97,13 @@ class Candidate:
     citation: Citation
     score: float
     speaker: str
+    structured: bool = False
 
     def as_prompt_data(self) -> dict[str, str]:
-        return {"id": self.citation.id, "topic": self.topic, "text": self.text, "source": self.citation.source}
+        data = {"id": self.citation.id, "topic": self.topic, "text": self.text, "source": self.citation.source}
+        if self.structured:
+            data["unit"] = "slide_highlight"
+        return data
 
 
 def sentences(text: str, *, maxsplit: int = -1) -> list[str]:
@@ -116,6 +128,7 @@ def slide_lines(body: str):
     lines = body.splitlines()
     index = 0
     while index < len(lines):
+        previous = next((line for line in reversed(lines[:index]) if line.strip()), "")
         raw = lines[index]
         marker = BULLET.match(raw)
         text = raw[marker.end():].strip() if marker else raw.strip()
@@ -135,14 +148,25 @@ def slide_lines(body: str):
             combined = text + " " + "; ".join(children) + "."
             if children and len(combined) <= 320:
                 index += len(children)
-                yield combined
+                yield combined, False
                 continue
-        yield text
+        next_line = next((line for line in lines[index:] if line.strip()), "")
+        # A visibly closed block can delimit a complete slide highlight even without a period.
+        closed = bool(BULLET.match(next_line) or SLIDE_BOUNDARY.match(next_line) or (
+            marker and not next_line and re.search(r"\n[ \t]*\n\s*$", body)
+        ))
+        structured = closed and bool(marker or SLIDE_BOUNDARY.match(previous))
+        yield text, structured
 
 
-def complete_claim(text: str) -> bool:
-    text = display_claim(text)
-    if not 24 <= len(text) <= 320 or len(WORD.findall(text)) < 5 or not text.endswith((".", "!")):
+def complete_claim(text: str, *, structured: bool = False) -> bool:
+    text = display_claim(text).strip()
+    if not 24 <= len(text) <= 320:
+        return False
+    if text.endswith((".", "!")):
+        if len(WORD.findall(text)) < 5:
+            return False
+    elif not structured or len(WORD.findall(text)) < 8 or DANGLING_BULLET.search(text):
         return False
     if text.endswith(("...", "….", "..")) or ABBREVIATION.search(text) or AMBIGUOUS_YEAR.search(text):
         return False
@@ -161,54 +185,59 @@ def document_units(passage: Passage, allow_definitions: bool):
         return
     body = re.sub(r"<!--.*?-->", "", passage.text, flags=re.S)
     units = []
-    for line in slide_lines(body) if passage.citation.source is SourceName.SLIDES else re.split(r"\n[ \t]*\n", body):
+    if passage.citation.source is SourceName.SLIDES:
+        lines = slide_lines(body)
+    else:
+        body = "\n".join(("\n" if NOTE_LINE.match(line) else "") + line for line in body.splitlines())
+        lines = ((line, False) for line in re.split(r"\n[ \t]*\n", body))
+    for line, structured in lines:
         line = line.strip()
         if not allow_definitions and REFERENCE_HEADING.search(line.lstrip("# ")):
             break
         bullet = BULLET.match(line)
         line = line[bullet.end():] if bullet else line
-        if line.startswith(("#", "|", "<")):
+        if line.startswith(("#", "|", "<")) and not NOTE_LINE.match(line):
             line = "\n".join(piece for piece in line.splitlines()
                              if not piece.lstrip().startswith(("#", "|", "<")))
-        units.extend(sentences(line))
+        units.extend((unit, structured) for unit in sentences(line))
 
     following = passage.following
     if units and following and not INSTRUCTION_TEXT.search(following.text):
-        tail = " ".join(units[-1].split())
+        tail = " ".join(units[-1][0].split())
         continuation = " ".join(sentences(following.text.strip(), maxsplit=1)[0].split())
         if tail and continuation and not continuation.startswith(("#", "<", "|", "•")) and (
             not tail.endswith((".", "!", "?")) and (
                 tail.endswith((",", ";")) or CONTINUATION.match(continuation) or continuation[0].islower()
             )
         ):
-            units[-1] = tail + " " + continuation
+            units[-1] = (tail + " " + continuation, False)
             joined = len(units) - 1
         else:
             joined = None
     else:
         joined = None
     citation = passage.citation
-    for index, part in enumerate(units):
+    for index, (part, structured) in enumerate(units):
         if index == 0 and passage.begins_mid_sentence:
             continue
         text = " ".join(part.strip().split())
         quantified = bool(QUANTIFIED.search(text))
-        definition = bool(DEFINITION_UNIT.search(text))
-        if complete_claim(text) and (allow_definitions or not definition):
+        definition = bool(DEFINITION_UNIT.search(text) or NOTE_LINE.match(text))
+        if complete_claim(text, structured=structured) and (allow_definitions or not definition):
             if quantified or SUBSTANTIVE.search(text) or (allow_definitions and definition):
-                yield text, int(quantified), following.citation if index == joined else citation
+                yield text, int(quantified), following.citation if index == joined else citation, structured
 
 
 def document_candidates(passage: Passage, instruction: str, focus: set[str], semantic: bool):
     vector_bonus = 2 * max(0, 1 - passage.distance) if semantic and passage.distance is not None else 0
-    for text, quantified, citation in document_units(passage, bool(DEFINITION_REQUEST.search(instruction))):
+    for text, quantified, citation, structured in document_units(passage, bool(DEFINITION_REQUEST.search(instruction))):
         intent = min(4, len(focus.intersection(WORD.findall(text.casefold()))))
         for topic in passage.topics:
             hits = lexical_hits(text, search_terms((topic,), passage.terms))
             if hits or (intent and quantified):
                 yield Candidate(topic, text, citation,
                                 4 * hits + intent + 5 * quantified + min(4, (passage.relevance or 0) / 4) + vector_bonus,
-                                citation.id)
+                                citation.id, structured)
 
 
 def passage_candidates(passage: Passage, instruction: str, focus: set[str], semantic: bool):
@@ -240,6 +269,8 @@ def passage_candidates(passage: Passage, instruction: str, focus: set[str], sema
     for sentence in (unit for paragraph in re.split(r"\n+", body) for unit in sentences(paragraph)):
         sentence = " ".join(sentence.split())
         words = WORD.findall(sentence.casefold())
+        if NOTE_LINE.match(sentence) and not DEFINITION_REQUEST.search(instruction):
+            continue
         if (
             not complete_claim(sentence) and not (
                 len(words) == 4 and 20 <= len(sentence) <= 320 and sentence.endswith(".")
@@ -338,12 +369,12 @@ def draft_themes(
             if all(matches):
                 accepted.append((matches[0].topic, text, [match.citation for match in matches], "verified_quote"))
     if not accepted:
-        seen = set()
+        seen = defaultdict(int)
         for item in candidates:
             group = (item.topic.casefold(), item.citation.source)
-            if group not in seen:
+            if seen[group] < (2 if item.structured else 1):
                 accepted.append((item.topic, item.text, [item.citation], "fallback_quote"))
-                seen.add(group)
+                seen[group] += 1
 
     grouped = {}
     for topic, text, citations, method in accepted:

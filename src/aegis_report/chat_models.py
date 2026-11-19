@@ -1,3 +1,4 @@
+import re
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -175,3 +176,38 @@ def apply_operations(spec: ReportSpec, operations: list[Operation]) -> ReportSpe
             else:
                 sections[target].update(item.model_dump(mode="json", exclude={"op", "section_id"}))
     return ReportSpec.model_validate(spec.model_dump(mode="json") | {"sections": list(sections.values())})
+
+
+_REMOVE = re.compile(r"\b(?:drop|remove|delete|omit|take out)\b")
+_REPLACE = re.compile(r"\b(?:replace|swap|substitute)\b")
+_INSTRUCTION = re.compile(r"\b(?:instruction|wording|tone|worded|write|phrasing|language|plain|short|brief|concise)\b")
+
+
+def minimal_operations(spec: ReportSpec, operations: list[Operation], message: str) -> list[Operation]:
+    """Keep high-impact edits only when requested in the current user message."""
+    request = re.sub(r"[^\w]+", " ", message.casefold()).strip()
+    sections = {section.id: section for section in spec.sections}
+    accepted = []
+    for operation in operations:
+        guard = {
+            "remove_section": _REMOVE,
+            "replace_section": _REPLACE,
+            "set_instruction": _INSTRUCTION,
+        }.get(operation.op)
+        if guard:
+            target = operation.section.id if isinstance(operation, SectionPut) else operation.section_id
+            section = sections.get(target)
+            intent = guard.search(request)
+            if not section or not intent or re.search(r"\b(?:not|never|without)\s+$", request[:intent.start()]):
+                continue
+            if operation.op in ("remove_section", "replace_section") and re.match(
+                r"\s+(?:(?:the|a|its)\s+)?(?:notes?|rows?|banks?|sources?|metrics?|columns?|periods?|"
+                r"format|instruction|citations?|footnotes?)\b", request[intent.end():],
+            ):
+                continue
+            names = [re.sub(r"[^\w]+", " ", value.casefold()).strip() for value in (section.id, section.title)]
+            named = any(name and f" {name} " in f" {request} " for name in names)
+            if not named and len(sections) != 1:
+                continue
+        accepted.append(operation)
+    return accepted

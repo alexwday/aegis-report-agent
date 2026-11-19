@@ -204,9 +204,10 @@ async function loadReport(id) {
   const pane = $("report-detail");
   pane.replaceChildren(node("p", "Loading report…", "muted"));
   const current = await request(path);
-  const [versions, history, schedule] = await Promise.all([
+  const [versions, history, periods, schedule] = await Promise.all([
     request(path + "/versions?limit=20"),
     request(path + "/schedule/runs?limit=20"),
+    request(path + "/schedule/periods?limit=20"),
     request(path + "/schedule").catch((error) => {
       if (error.reason === "schedule_not_found") return null;
       throw error;
@@ -262,6 +263,16 @@ async function loadReport(id) {
   const scheduleQuarter = node("select");
   for (let quarter = 1; quarter <= 4; quarter++) scheduleQuarter.append(option(quarter, `Q${quarter}`));
   scheduleQuarter.value = schedule?.period.quarter ?? $("quarter").value;
+  const timezone = input("text", schedule?.timezone ?? "America/Toronto");
+  const quiet = input("number", schedule?.quiet_seconds);
+  quiet.min = "0";
+  quiet.placeholder = "Deployment default";
+  const correction = input("number", schedule?.correction_days ?? 14);
+  correction.min = "0";
+  correction.max = "90";
+  const provisional = input("number", schedule?.provisional_after_hours);
+  provisional.min = "0";
+  provisional.placeholder = "Wait for complete inputs";
   const enabled = input("checkbox");
   enabled.checked = Boolean(schedule?.enabled);
   const checked = makeField("Enabled", enabled);
@@ -270,21 +281,50 @@ async function loadReport(id) {
     await request(path + "/schedule", { method: "PUT", body: {
       version: Number(versionInput.value), enabled: enabled.checked,
       period: { year: Number(scheduleYear.value), quarter: Number(scheduleQuarter.value) },
-      expected_revision: schedule?.revision ?? null,
+      expected_revision: schedule?.revision ?? null, timezone: timezone.value,
+      quiet_seconds: quiet.value === "" ? null : Number(quiet.value), correction_days: Number(correction.value),
+      provisional_after_hours: provisional.value === "" ? null : Number(provisional.value),
     } });
     await loadReport(id);
   });
-  const enqueue = button("Enqueue scheduled run", async () => {
+  const enqueue = button("Request schedule check", async () => {
     const next = await post(path + "/schedule/enqueue");
     await openRun(next.id);
   });
   save.disabled = !active;
   enqueue.disabled = !active || !schedule?.enabled;
-  scheduleBox.append(schedule ? definition({ "Schedule revision": schedule.revision }) : node("p", "No schedule configured.", "empty"),
-    makeField("Pinned version", versionInput), makeField("Next fiscal year", scheduleYear),
-    makeField("Next fiscal quarter", scheduleQuarter), checked, actions(save, enqueue));
-  pane.append(detail("Schedule", scheduleBox), detail("Scheduled run history", list(history.map((row) => item(
-    `${periodText(row.period)} · ${row.state}`, row.error_code ? wording(row.error_code) : `Version ${row.version}`,
+  scheduleBox.append(schedule ? definition({
+    "Schedule revision": schedule.revision, "Next target": periodText(schedule.next_period),
+  }) : node("p", "No schedule configured.", "empty"),
+    makeField("Pinned version", versionInput), makeField("Starting fiscal year", scheduleYear),
+    makeField("Starting fiscal quarter", scheduleQuarter), makeField("Timezone", timezone),
+    makeField("Quiet period in seconds", quiet), makeField("Correction window in days", correction),
+    makeField("Allow a provisional report after hours", provisional), checked, actions(save, enqueue));
+  const periodStatuses = node("div", undefined, "flow");
+  const statusLabels = { waiting_for_data: "Waiting for data", ready_to_run: "Ready to run", running: "Running",
+    published: "Published", provisional: "Provisional", failed: "Failed", superseded: "Superseded" };
+  for (const row of periods) {
+    const state = node("div", undefined, "flow");
+    state.append(definition({
+      "Pinned version": row.version, Generation: row.generation,
+      "Current output": row.current_kind, "Next check": row.next_check_at ? new Date(row.next_check_at).toLocaleString() : null,
+      Detail: row.message,
+    }));
+    if (row.missing.length) state.append(detail("Pending bank and source scopes", observations(row.missing)));
+    if (row.last_correction.length) state.append(detail("Latest correction", list(row.last_correction.map((change) => item(
+      `${change.bank || "Scope"} · ${sourceLabels[change.source] || change.source || "Source"}`,
+      `${change.change}${change.period ? " · " + periodText(change.period) : ""}`,
+    )), "")));
+    if (row.current_run_id) state.append(button("Open current output", () => openRun(row.current_run_id)));
+    periodStatuses.append(detail(`${periodText(row.period)} · ${statusLabels[row.state] || row.state}`, state));
+  }
+  if (!periods.length) periodStatuses.append(node("p", "No fiscal periods have been checked yet.", "empty"));
+  periodStatuses.append(button("Refresh schedule status", () => loadReport(id)));
+  const statuses = detail("Schedule period status", periodStatuses);
+  statuses.open = Boolean(schedule?.enabled);
+  pane.append(detail("Schedule", scheduleBox), statuses, detail("Scheduled run history", list(history.map((row) => item(
+    `${periodText(row.period)} · ${statusLabels[row.publication_state] || row.state}`,
+    row.error_code ? wording(row.error_code) : `Version ${row.version}`,
     button("Open run", () => openRun(row.id)))), "No runs have been enqueued by this schedule.")));
   $("template-save").elements.report_id.value = report.id;
 }
@@ -566,6 +606,8 @@ function renderOutput(result) {
   $("export-pdf").hidden = run.mode !== "generate";
   const pane = $("run-output");
   pane.replaceChildren(node("h3", result.title));
+  if (result.publication === "provisional")
+    pane.append(node("p", "Provisional report. Required source inputs are still pending.", "notice"));
   if (result.diff) {
     const diff = detail("Diff against saved baseline", json({ summary: result.diff, detail: result.diff_details }));
     diff.open = true;

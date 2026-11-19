@@ -1,6 +1,7 @@
 from enum import StrEnum
 from typing import Annotated, Literal
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -50,6 +51,7 @@ class BenchmarkInput(StrictModel):
 class EarningsInput(StrictModel):
     source: Literal["transcripts"]
     topics: list[Label] = Field(min_length=1, max_length=4)
+    terms: list[Label] = Field(default_factory=list, max_length=8)
     vector: bool = False
     required: bool = True
 
@@ -72,7 +74,11 @@ SectionInput = BenchmarkInput | EarningsInput | DocumentInput
 
 
 class PeriodPreset(StrictModel):
-    kind: Literal["trailing_quarters", "same_quarter_years", "quarter_sequence", "year_sequence"]
+    kind: Literal["trailing_quarters", "same_quarter_years", "quarter_sequence", "year_sequence"] = Field(
+        description="For the same fiscal quarter over the last N years, use same_quarter_years (current first). "
+                    "Use year_sequence only when oldest-to-newest year-by-year order is requested. "
+                    "For consecutive quarters use trailing_quarters, or quarter_sequence for chronological order.",
+    )
     count: int = Field(ge=1, le=12)
 
     def offsets(self) -> list[int]:
@@ -267,3 +273,15 @@ class ScheduleWrite(StrictModel):
     period: Period
     enabled: bool
     expected_revision: int | None = Field(default=None, ge=1)
+    timezone: str = Field(default="America/Toronto", min_length=1, max_length=64)
+    quiet_seconds: float | None = Field(default=None, ge=0, le=86400)
+    correction_days: int = Field(default=14, ge=0, le=90)
+    provisional_after_hours: float | None = Field(default=None, ge=0, le=2160)
+
+    @model_validator(mode="after")
+    def validate_timezone(self):
+        try:
+            ZoneInfo(self.timezone)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError("Choose a valid IANA timezone") from exc
+        return self

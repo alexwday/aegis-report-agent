@@ -90,6 +90,8 @@ def render_pdf(result: dict) -> bytes:
         paragraph(result["title"], "title"),
         paragraph(f"{period}  ·  Vendor fiscal labels", "meta"),
     ]
+    if result.get("publication") == "provisional":
+        parts.append(paragraph("Provisional report. Required source inputs are still pending.", "heading"))
     unconfirmed = sum(entry["state"] != "ready" or entry.get("data_stability") != "stable"
                       for entry in result.get("readiness", {}).values())
     if unconfirmed:

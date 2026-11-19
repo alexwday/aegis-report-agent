@@ -2,11 +2,12 @@
 import argparse
 import os
 
-import httpx
-from eval_support import evaluation_gateway, print_claims
+from eval_support import evaluation_client, evaluation_gateway, print_claims
 
+from aegis_report.claims import DEFINITION_REQUEST
 from aegis_report.db import connect
 from aegis_report.documents import RtsSource, SlideSource
+from aegis_report.gateway import GatewayError
 from aegis_report.models import Period
 from aegis_report.sources import BankCatalog, Scope
 from aegis_report.topics import search_terms
@@ -31,15 +32,21 @@ def main() -> None:
     dsn = os.environ.get("SOURCE_DATABASE_URL")
     if not dsn:
         parser.error("Set SOURCE_DATABASE_URL to a read-only DSN.")
-    with httpx.Client(trust_env=False) as client, connect(dsn, source=True) as conn:
+    with evaluation_client(args.gateway) as client, connect(dsn, source=True) as conn:
         try:
             gateway = evaluation_gateway(args.gateway, client, args.credentials_hook)
         except ValueError as exc:
             parser.error(str(exc))
         bank = BankCatalog().resolve(conn, args.bank)
-        query = Scope(bank, period, topics=tuple(args.topic), terms=tuple(args.term))
+        query = Scope(bank, period, topics=tuple(args.topic), terms=tuple(args.term),
+                      include_definitions=bool(DEFINITION_REQUEST.search(args.instruction)))
         terms = search_terms(query.topics, query.terms)
-        vector = gateway.embed(", ".join(terms)) if args.gateway == "real" else None
+        try:
+            vector = gateway.embed(", ".join(terms)) if args.gateway == "real" else None
+        except GatewayError as exc:
+            print(f"FAIL {bank.symbol} {period}: {exc}")
+            raise SystemExit(1) from None
+        failed = False
         print(f"{bank.symbol} · {period} · {args.gateway} gateway · lexical terms: {', '.join(terms)}")
         for label, adapter in (("slides", SlideSource(0.35)), ("RTS", RtsSource(0.35))):
             if args.source not in ("both", label.casefold()):
@@ -54,7 +61,12 @@ def main() -> None:
                 print(f"  {index}. {hit.citation.locator} (lexical score {hit.relevance:.5f}{distance})")
                 print(f"     {excerpt}" + ("…" if len(words) > 220 else ""))
             if args.claims:
-                print_claims(hits, args.instruction, gateway)
+                try:
+                    print_claims(hits, args.instruction, gateway)
+                except GatewayError as exc:
+                    print(f"FAIL {label} {bank.symbol} {period}: {exc}")
+                    failed = True
+        raise SystemExit(int(failed))
 
 
 if __name__ == "__main__":

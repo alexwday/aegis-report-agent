@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from aegis_report.claims import candidates_for, draft_themes
+from aegis_report.config import gateway_tls, model_header_from_env
 from aegis_report.gateway import GatewayError, InternalGateway, StubGateway
 
 
@@ -25,7 +26,12 @@ def evaluation_gateway(mode: str, client: httpx.Client, credentials_hook: str | 
         return {"Authorization": f"Bearer {key}"} if key else {}
 
     provider = credential_provider(configured_hook) if configured_hook else credentials
-    return InternalGateway(client, url, model, os.getenv("EMBEDDING_MODEL", "text-embedding-3-large"), provider)
+    return InternalGateway(client, url, model, os.getenv("EMBEDDING_MODEL", "text-embedding-3-large"),
+                           provider, model_header_from_env())
+
+
+def evaluation_client(mode: str) -> httpx.Client:
+    return httpx.Client(trust_env=False, verify=gateway_tls() if mode == "real" else True)
 
 
 def credential_provider(spec: str):
@@ -63,7 +69,7 @@ def print_claims(passages, instruction, gateway):
     print(f"Shortlist: {len(candidates)} candidates")
     for index, item in enumerate(candidates, 1):
         print(f"  {index}. {item.text} [{item.score:.2f}] · {item.citation.locator}")
-    claims = draft_themes(instruction, passages, gateway, candidates=candidates)
+    claims = draft_themes(instruction, passages, gateway, candidates=candidates, strict_gateway=True)
     print(f"Final claims: {len(claims)}")
     for claim in claims:
         print(f"[{claim.method}] {claim.text}")

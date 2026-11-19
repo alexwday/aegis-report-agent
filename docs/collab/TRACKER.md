@@ -14,7 +14,7 @@
 | T-012 | G3 | Add personal templates and offline PDF export. | DONE | [PDF](../../src/aegis_report/pdf_export.py), [system templates](../../src/aegis_report/templates.py) |
 | T-013 | G4 | Build chat turn lifecycle, typed tools, resumable SSE, fallback turn result and provider tests. | DONE | [Chat agent](../../src/aegis_report/chat_agent.py), [tests](../../tests/test_postgres.py) |
 | T-014 | G5 | Deliver the local developer console and Functions Assist specification. | DONE | [Console](../../ui/index.html), [UI handoff](../integration/functions-assist-ui.md) |
-| T-015 | G6 | Implement quarterly scheduling and corrections, readiness, retries, fencing and opt-in provisional publication. | TODO | |
+| T-015 | G6 | Implement quarterly scheduling and corrections, readiness, retries, fencing and opt-in provisional publication. | DONE | [Poller](../../src/aegis_report/scheduler.py), [migration](../../db/migrations/009_schedule_publication.sql) |
 | T-016 | G7 | Complete security/privacy review, load/cost testing, OpenAPI contract, and operations handoff. | TODO | |
 | T-017 | G1 | Complete the template, patch, preview diff, version and next-quarter worker slice. | DONE | [HTTP demo](../../scripts/demo.py), [PostgreSQL test](../../tests/test_postgres.py) |
 | T-018 | G1 | Generate OpenAPI, check it in CI and verify a changed load restarts the quiet interval. | DONE | [CI](../../.github/workflows/check.yml), [worker](../../src/aegis_report/worker.py), [tests](../../tests/test_postgres.py) |
@@ -42,3 +42,8 @@
 | T-040 | G5 | Add per-call real model credentials hook and shared reason wording. | DONE | [Evaluation guide](../integration/evaluation.md), [catalog](../../src/aegis_report/reasons.py) |
 | T-041 | G5 | Deliver API guide, captured examples, operations notes and revised demo. | DONE | [Guide](../integration/api-guide.md), [examples](../integration/api-examples.md) |
 | T-042 | G5 | Submit S-006 and wait at G5 for R-006. | DONE | [S-006](status/S-006.md), `review-006` |
+| T-043 | G6 | Complete slide claims, sentence relevance, text integrity, planning reliability, and gateway header. | DONE | [Claims](../../src/aegis_report/claims.py), [chat](../../src/aegis_report/chat_agent.py), [gateway](../../src/aegis_report/gateway.py) |
+| T-044 | G6 | Expose period and generation status, corrections, and current output to the API and console. | DONE | [API contract](../../api/openapi.json), [console](../../ui/app.js) |
+| T-045 | G6 | Add read-only schedule evaluation and operational metrics. | DONE | [Readiness](../../scripts/eval_schedule.py), [metrics](../../scripts/schedule_metrics.py) |
+| T-046 | G6 | Demonstrate automatic quarter roll-forward and document publication semantics. | DONE | [Demo](../../scripts/demo.py), [operations](../integration/operations.md) |
+| T-047 | G6 | Submit S-007 and stop for R-007. | REVIEW | [S-007](status/S-007.md), `review-007` |

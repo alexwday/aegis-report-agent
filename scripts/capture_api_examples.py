@@ -2,6 +2,7 @@
 import argparse
 import json
 import re
+from time import monotonic, sleep
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -52,7 +53,7 @@ def capture(client):
     call = capture.call
     print("# API examples from the local fixture\n")
     print("Regenerate with `uv run --no-sync python scripts/capture_api_examples.py` while")
-    print("`./scripts/dev` is running. Responses are selected fields from the live synthetic API.")
+    print("`SCHEDULE_POLL_SECONDS=0.25 ./scripts/dev` is running. Responses are selected fields from the live synthetic API.")
     print("Resource IDs are normalized consistently. Values and state transitions come from the fixture.\n")
     call("GET", "/v1/templates", select=lambda items: items[:1])
     draft = call("POST", "/v1/drafts", {"template": "quarterly-earnings", "bank": "SYN1"},
@@ -98,12 +99,23 @@ def capture(client):
     wait_for_run(client, diff["id"])
     call("GET", f"/v1/runs/{diff['id']}/output.json", select=selected("diff", "baseline_run_id"))
     version = call("POST", drafts + "/save", {"revision": accept["revision"]}, status=201)
-    call("PUT", report + "/schedule", {"version": version["version"], "enabled": True, "period": Q2})
+    call("PUT", report + "/schedule", {"version": version["version"], "enabled": True, "period": Q2,
+                                       "quiet_seconds": 2})
     scheduled = call("POST", report + "/schedule/enqueue", status=202)
     call("GET", report + "/schedule/runs?limit=1", select=lambda items: [
         {key: row[key] for key in ("id", "version", "period", "state", "error_code")} for row in items
     ])
-    print("The schedule run ID is also a normal run resource. The fixture's worker applies the quiet period.\n")
+    schedule_deadline = monotonic() + 8
+    path = report + "/schedule/periods?limit=3"
+    while monotonic() < schedule_deadline:
+        if any(row["current_kind"] == "complete" for row in client.get(path).raise_for_status().json()):
+            break
+        sleep(0.15)
+    call("GET", path, select=lambda items: [
+        {key: row[key] for key in ("period", "state", "generation", "current_kind", "output_url")}
+        for row in items
+    ])
+    print("A pending check returns a normal run ID. The poller adopts it when inputs are stable.\n")
     print(f"### GET `{capture.normalize(base_path)}/output.pdf`\n")
     pdf = client.get(base_path + "/output.pdf").raise_for_status()
     print(f"The saved run returned `HTTP {pdf.status_code}`, `{pdf.headers['content-type']}` and a valid PDF signature.")

@@ -152,6 +152,8 @@ def render_html(result: dict) -> str:
         f"<title>{title}</title><main><h1>{title}</h1>",
         f"<p>{escape(str(Period.model_validate(result['period'])))} · Vendor fiscal labels</p>",
     ]
+    if result.get("publication") == "provisional":
+        blocks.append("<p><strong>Provisional report.</strong> Required source inputs are still pending.</p>")
     for key, observation in result.get("readiness", {}).items():
         if observation.get("evidence_state") == "no_match":
             selector = observation.get("selector") or {}

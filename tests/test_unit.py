@@ -307,3 +307,124 @@ def test_real_eval_credential_hooks_resolve_per_request_and_fail_safely(monkeypa
             invalid.choose_observation("Find a cited value", ["two"])
     with pytest.raises(ValueError, match="could not be loaded"):
         credential_provider("missing_test_provider:headers")
+
+
+def test_document_rebuilds_highlight_bullets_and_preserves_exact_normalized_quote():
+    from aegis_report.claims import candidates_for
+    from aegis_report.gateway import StubGateway
+
+    row = Passage(bank="SYN1-CA", period=Period(year=2090, quarter=3),
+                  topics=("Credit Quality & Provisions",), citation=Citation(
+                      id="credit-slide", source=SourceName.SLIDES, locator="Fixture slide · page 17"),
+                  text="## Highlights\n- **PCL** fell 6 bps across:\n  - Sampler Banking\n  - U.S. Banking\n  - Fixture Lending")
+    pool = candidates_for([row])
+    assert len(pool) == 1 and pool[0].citation.id == "credit-slide"
+    assert pool[0].text == "**PCL** fell 6 bps across: Sampler Banking; U.S. Banking; Fixture Lending."
+    claim, = draft_themes("Show the movement", [row], StubGateway())
+    assert claim.source_text == pool[0].text and claim.text.startswith("PCL fell 6 bps")
+    assert claim.evidence_ids == ["credit-slide"]
+
+
+def test_themes_require_sentence_topic_and_reject_abbreviation_fragments():
+    from aegis_report.claims import candidates_for
+    from aegis_report.gateway import StubGateway
+
+    row = Passage(bank="SYN1-CA", period=Period(year=2090, quarter=3),
+                  topics=("Credit Quality & Provisions",), citation=Citation(
+                      id="credit-call", source=SourceName.EARNINGS, locator="Fixture earnings"),
+                  text=("PCL increased in fiscal 209014, driven by the U.S. and Canadian portfolios. "
+                        "Profitability improved when expenses fell 6 percent. PCL changed in the U.S."))
+    candidates = candidates_for([row], "Show credit quality and profitability")
+    assert [item.text for item in candidates] == [
+        "PCL increased in fiscal 209014, driven by the U.S. and Canadian portfolios.",
+    ]
+    claim, = draft_themes("Show credit quality", [row], StubGateway())
+    assert claim.text == "PCL increased in fiscal 2090, driven by the U.S. and Canadian portfolios."
+    assert claim.source_text == candidates[0].text
+    marked = row.model_copy(update={"text": "PCL rose 5¹ bps in fiscal 2090 14."})
+    value, = draft_themes("Show credit quality", [marked], StubGateway())
+    assert value.text == "PCL rose 5 bps in fiscal 2090."
+
+
+def test_minimal_operations_remove_extraneous_changes():
+    from eval_chat import DRAFT
+
+    from aegis_report.chat_models import PatchOperations, minimal_operations
+
+    plan = PatchOperations(operations=[
+        {"op": "set_output_format", "section_id": "net-income", "output_format": "table"},
+        {"op": "remove_section", "section_id": "margin-slides"},
+        {"op": "set_instruction", "section_id": "net-income", "instruction": "Rewrite everything."},
+    ])
+    edits = minimal_operations(DRAFT, plan.operations, "Make Net income table only.")
+    assert [edit.op for edit in edits] == ["set_output_format"]
+    assert [edit.op for edit in minimal_operations(DRAFT, plan.operations, "Drop the Margin slides section.")] == [
+        "set_output_format", "remove_section",
+    ]
+
+
+def test_gateway_model_header_and_chat_retry(monkeypatch):
+    from time import monotonic
+
+    from aegis_report.chat_agent import run_model_turn
+
+    sent = []
+    monkeypatch.setattr("aegis_report.chat_agent.sleep", lambda delay: None)
+
+    def upstream(request):
+        body = json.loads(request.content)
+        sent.append((body["model"], request.headers["x-test-model"]))
+        if body["model"] == "text-embedding-3-large":
+            return httpx.Response(200, json={"data": [{"embedding": [1] * 3072}]})
+        if len(sent) == 1:
+            return httpx.Response(503)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "Completed."}}]})
+
+    with httpx.Client(transport=httpx.MockTransport(upstream)) as client:
+        gateway = InternalGateway(client, "https://model.example.invalid", "fixture-model",
+                                  "text-embedding-3-large", lambda: {"X-Test-Model": "override"}, "X-Test-Model")
+        assert run_model_turn(gateway, "Read the draft", [], lambda *_: {}, monotonic() + 3) == "Completed."
+        assert len(gateway.embed("Credit")) == 3072
+    assert sent == [("fixture-model", "fixture-model")] * 2 + [
+        ("text-embedding-3-large", "text-embedding-3-large"),
+    ]
+
+
+def test_core_canadian_quarter_uses_configured_timezone():
+    from datetime import UTC, datetime
+
+    from aegis_report.models import ReportSpec
+    from aegis_report.scheduler import calendar_ready_at
+
+    section = {"id": "profit", "title": "Profit", "bank": "RY-CA", "sources": [{"metric": "Net Income"}],
+               "instruction": "Show cited values."}
+    spec = ReportSpec(title="Example", sections=[section])
+    period = Period(year=2090, quarter=1)
+    assert calendar_ready_at(spec, period, "America/Toronto").astimezone(UTC) == datetime(2090, 2, 1, 5, tzinfo=UTC)
+    other = ReportSpec(title="Example", sections=[section | {"bank": "SYN3-US"}])
+    assert calendar_ready_at(other, period, "America/Toronto") is None
+
+
+def test_chat_evaluation_records_gateway_error_and_continues(monkeypatch, capsys):
+    import sys
+
+    import eval_chat
+
+    from aegis_report.gateway import GatewayError, StubGateway
+
+    calls = []
+
+    def evaluate(case, gateway):
+        calls.append(case)
+        if len(calls) == 1:
+            raise GatewayError("model_provider_unavailable")
+        return True
+
+    monkeypatch.setattr(eval_chat, "evaluate_case", evaluate)
+    monkeypatch.setattr(eval_chat, "evaluation_gateway", lambda *_: StubGateway())
+    monkeypatch.setattr(sys, "argv", ["eval_chat.py", "--repeat", "2", "--minimum-pass-rate", "0.9"])
+    with pytest.raises(SystemExit) as outcome:
+        eval_chat.main()
+    assert outcome.value.code == 0 and len(calls) == 50
+    output = capsys.readouterr().out
+    assert "01.01 FAIL (model_provider_unavailable)" in output and "49/50 matched" in output

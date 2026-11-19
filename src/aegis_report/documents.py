@@ -42,6 +42,9 @@ class SlideSource:
                 SELECT phraseto_tsquery('english', phrase) AS term FROM unnest(%s::text[]) AS phrases(phrase)
             ), candidates AS (
                 SELECT d.file_path, d.file_hash, d.chunk_id, d.page_number, d.name, left(d.chunk_content, 16000) AS body,
+                       CASE WHEN %s OR concat_ws(' ', d.name, left(d.chunk_content, 120)) !~*
+                            'glossary|endnotes?|^[# ]*notes|reconciliation|forward.looking|disclaimer'
+                       THEN 1 ELSE 0.15 END AS heading_weight,
                        setweight(to_tsvector('english', coalesce(d.name, '')), 'A') ||
                        setweight(to_tsvector('english', d.chunk_content), 'D') AS lexemes,
                        CASE WHEN %s::text IS NOT NULL THEN (
@@ -58,7 +61,7 @@ class SlideSource:
             ), ranked AS (
                 SELECT file_path, file_hash, chunk_id, page_number, name, body, distance,
                        coalesce((SELECT sum(ts_rank_cd(lexemes, term, 34)) FROM terms
-                                 WHERE lexemes @@ term), 0) AS rank
+                                 WHERE lexemes @@ term), 0) * heading_weight AS rank
                 FROM candidates
             )
             SELECT file_path, file_hash, chunk_id, page_number, name, body, distance, rank
@@ -66,7 +69,7 @@ class SlideSource:
             WHERE rank > 0 OR distance <= %s OR %s
             ORDER BY rank + CASE WHEN distance IS NULL THEN 0 ELSE greatest(0, %s - distance) * 0.05 END DESC,
                      rank DESC, distance NULLS LAST, file_path, page_number, chunk_id LIMIT 8
-        """, (terms, query, query, scope.bank.symbol, str(scope.period.year), f"Q{scope.period.quarter}",
+        """, (terms, scope.include_definitions, query, query, scope.bank.symbol, str(scope.period.year), f"Q{scope.period.quarter}",
               self.threshold, not scope.topics and not scope.terms, self.threshold))
         return [
             Passage(

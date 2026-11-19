@@ -43,8 +43,18 @@ CONTINUATION = re.compile(
     r"^(?:and|or|but|nor|yet|which|that|where|while|with|as well as|including|resulting in|due to)\b", re.I
 )
 FRAGMENT_START = re.compile(r"^[A-Z][a-z-]+, (?:which|where|who|while)\b")
-SENTENCE_BOUNDARY = re.compile(r"(?<!\b[A-Z]\.)(?<!\b[A-Z]\.[A-Z]\.)(?<=[.!?])\s+(?=[A-Z0-9$€£])")
-BULLET = re.compile(r"^\s*(?:[-*+•▪◦]\s+|\d{1,2}[.)]\s+)")
+SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9$€£“])")
+ABBREVIATION = re.compile(
+    r"(?:\b[a-z](?:\.[a-z])+|\b(?:inc|corp|ltd|co|no|nos|approx|vs|etc|mr|mrs|ms|dr|st|fig|jan|feb|mar|apr|"
+    r"jun|jul|aug|sep|sept|oct|nov|dec))\.$", re.I,
+)
+BULLET = re.compile(r"^(?P<indent>[ \t]*)(?:[-*+•▪◦‣–—]\s+|\d{1,2}[.)]\s+)")
+FOOTNOTE = re.compile(r"<sup[^>]*>\s*\d+\s*</sup>|[⁰¹²³⁴⁵⁶⁷⁸⁹]+|(?:\*{1,3}|_{1,3})?\[\d{1,2}\]", re.I)
+FUSED_YEAR = re.compile(
+    r"(\b(?:fiscal(?: year)?\s+|FY)(?:19|20|21)\d{2})(?:[1-9]\d?(?=\W|$)|"
+    r"[ \t]+[1-9]\d?(?=[,.;:)]|$|\s+(?:was|at|rose|increased)\b))", re.I,
+)
+AMBIGUOUS_YEAR = re.compile(r"\b(?:fiscal(?: year)?\s+|FY)(?:19|20|21)\d{2}\d+", re.I)
 QUANTIFIED = re.compile(r"\d[\d.,]*\s*(?:%|bps?\b|basis points?\b|million\b|billion\b|[×x]\b)|[$€£]\s*\d", re.I)
 SUBSTANTIVE = re.compile(
     r"\b(?:rose|fell|grew|declined|increas\w*|decreas\w*|improv\w*|expand\w*|"
@@ -69,6 +79,7 @@ class ThemeClaim(StrictModel):
     citations: list[Citation]
     method: str
     banks: list[str] | None = None
+    source_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -83,10 +94,57 @@ class Candidate:
         return {"id": self.citation.id, "topic": self.topic, "text": self.text, "source": self.citation.source}
 
 
+def sentences(text: str, *, maxsplit: int = -1) -> list[str]:
+    start = 0
+    output = []
+    for split in SENTENCE_BREAK.finditer(text):
+        if ABBREVIATION.search(text[start:split.start()]) or len(output) == maxsplit:
+            continue
+        output.append(text[start:split.start()])
+        start = split.end()
+    return [*output, text[start:]]
+
+
+def display_claim(text: str) -> str:
+    text = re.sub(r"\*{1,3}\(\d{1,2}\)", "", text)
+    text = FOOTNOTE.sub("", text)
+    text = re.sub(r"(?<!\w)\*{1,3}([^*]+)\*{1,3}(?!\w)", r"\1", text)
+    return FUSED_YEAR.sub(r"\1", text)
+
+
+def slide_lines(body: str):
+    lines = body.splitlines()
+    index = 0
+    while index < len(lines):
+        raw = lines[index]
+        marker = BULLET.match(raw)
+        text = raw[marker.end():].strip() if marker else raw.strip()
+        index += 1
+        if text.endswith(":") and not text.startswith(("#", "|", "<")):
+            children = []
+            for following in lines[index:]:
+                child = BULLET.match(following)
+                if not child:
+                    break
+                label = following[child.end():].strip()
+                if not label or label.endswith(":") or (
+                    marker and len(child["indent"]) <= len(marker["indent"]) and complete_claim(label)
+                ):
+                    break
+                children.append(label.removesuffix(".").rstrip(" ;"))
+            combined = text + " " + "; ".join(children) + "."
+            if children and len(combined) <= 320:
+                index += len(children)
+                yield combined
+                continue
+        yield text
+
+
 def complete_claim(text: str) -> bool:
+    text = display_claim(text)
     if not 24 <= len(text) <= 320 or len(WORD.findall(text)) < 5 or not text.endswith((".", "!")):
         return False
-    if text.endswith(("...", "….", "..")):
+    if text.endswith(("...", "….", "..")) or ABBREVIATION.search(text) or AMBIGUOUS_YEAR.search(text):
         return False
     beginning = text.lstrip("\"'“‘($€£")
     return bool(
@@ -103,7 +161,7 @@ def document_units(passage: Passage, allow_definitions: bool):
         return
     body = re.sub(r"<!--.*?-->", "", passage.text, flags=re.S)
     units = []
-    for line in body.splitlines() if passage.citation.source is SourceName.SLIDES else re.split(r"\n[ \t]*\n", body):
+    for line in slide_lines(body) if passage.citation.source is SourceName.SLIDES else re.split(r"\n[ \t]*\n", body):
         line = line.strip()
         if not allow_definitions and REFERENCE_HEADING.search(line.lstrip("# ")):
             break
@@ -112,12 +170,12 @@ def document_units(passage: Passage, allow_definitions: bool):
         if line.startswith(("#", "|", "<")):
             line = "\n".join(piece for piece in line.splitlines()
                              if not piece.lstrip().startswith(("#", "|", "<")))
-        units.extend(SENTENCE_BOUNDARY.split(line))
+        units.extend(sentences(line))
 
     following = passage.following
     if units and following and not INSTRUCTION_TEXT.search(following.text):
         tail = " ".join(units[-1].split())
-        continuation = " ".join(SENTENCE_BOUNDARY.split(following.text.strip(), maxsplit=1)[0].split())
+        continuation = " ".join(sentences(following.text.strip(), maxsplit=1)[0].split())
         if tail and continuation and not continuation.startswith(("#", "<", "|", "•")) and (
             not tail.endswith((".", "!", "?")) and (
                 tail.endswith((",", ";")) or CONTINUATION.match(continuation) or continuation[0].islower()
@@ -133,7 +191,7 @@ def document_units(passage: Passage, allow_definitions: bool):
     for index, part in enumerate(units):
         if index == 0 and passage.begins_mid_sentence:
             continue
-        text = " ".join(part.strip("*_ ").split())
+        text = " ".join(part.strip().split())
         quantified = bool(QUANTIFIED.search(text))
         definition = bool(DEFINITION_UNIT.search(text))
         if complete_claim(text) and (allow_definitions or not definition):
@@ -173,21 +231,30 @@ def passage_candidates(passage: Passage, instruction: str, focus: set[str], sema
             return
         if INTRODUCTION.fullmatch(heading) and len(heading.split()) <= 4:
             speaker, body = heading.casefold(), remaining
-    topic_terms = {topic: search_terms((topic,)) for topic in passage.topics}
+    topic_terms = {
+        topic: tuple(term for term in search_terms((topic,), passage.terms)
+                     if term not in ("margin", "allowance") or term in passage.terms)
+        for topic in passage.topics
+    }
     vector_bonus = 2 * max(0, 1 - passage.distance) if semantic and passage.distance is not None else 0
-    for sentence in re.split(r"(?<=[.!?])\s+|\n+", body):
+    for sentence in (unit for paragraph in re.split(r"\n+", body) for unit in sentences(paragraph)):
         sentence = " ".join(sentence.split())
         words = WORD.findall(sentence.casefold())
         if (
-            not (20 <= len(sentence) <= 320 and len(words) >= 4 and sentence.endswith((".", "!")))
+            not complete_claim(sentence) and not (
+                len(words) == 4 and 20 <= len(sentence) <= 320 and sentence.endswith(".")
+                and not ABBREVIATION.search(sentence) and sentence[0].isupper()
+            )
             or PLEASANTRY.match(sentence) or INTRODUCTION.fullmatch(sentence)
         ):
             continue
         intent = min(4, len(focus.intersection(words)))
         numeric = 1.5 if re.search(r"\d", sentence) else 0
         for topic, terms in topic_terms.items():
-            score = 4 * lexical_hits(sentence, terms) + intent + numeric + vector_bonus
-            yield Candidate(topic, sentence, passage.citation, score, speaker)
+            matches = lexical_hits(sentence, terms)
+            if matches:
+                score = 4 * matches + intent + numeric + vector_bonus
+                yield Candidate(topic, sentence, passage.citation, score, speaker)
 
 
 def focus_terms(instruction: str) -> set[str]:
@@ -243,6 +310,7 @@ def shortlist_passages(passages: list[Passage], instruction: str, *, semantic: b
 
 def draft_themes(
     instruction: str, passages: list[Passage], gateway: ModelGateway, *, candidates: list[Candidate] | None = None,
+    strict_gateway: bool = False,
 ) -> list[ThemeClaim]:
     if candidates is None:
         candidates = candidates_for(
@@ -255,6 +323,8 @@ def draft_themes(
     try:
         payload = gateway.draft_claims(instruction, [item.as_prompt_data() for item in candidates])
     except GatewayError:
+        if strict_gateway:
+            raise
         payload = None
     claims = payload.get("claims") if isinstance(payload, dict) and set(payload) == {"claims"} else None
     if isinstance(claims, list) and len(claims) <= 6:
@@ -285,8 +355,10 @@ def draft_themes(
     output = []
     for (folded, text), (topic, refs, method) in list(grouped.items())[:6]:
         slot[folded] += 1
+        display = display_claim(text)
         output.append(ThemeClaim(
-            key=f"{folded}:{slot[folded]}", topic=topic, text=text,
+            key=f"{folded}:{slot[folded]}", topic=topic, text=display,
+            source_text=text if display != text else None,
             evidence_ids=list(refs), citations=list(refs.values()), method=method,
         ))
     return output

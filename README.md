@@ -1,8 +1,8 @@
 # Aegis Report Agent
 
-A standalone quarterly report builder with chat-based draft editing, peer comparisons, cited document evidence, and HTML, JSON, and PDF exports. G5 includes a local developer console and an integration handoff for Functions Assist.
+A standalone quarterly report builder with chat-based draft editing, peer comparisons, cited document evidence, and HTML, JSON, and PDF exports. The local developer console exercises the Functions Assist integration. G6 adds recurring quarter publication, provisional output, and corrections.
 
-## Try the G5 slice
+## Try the G6 slice
 
 Install `uv` and PostgreSQL server tools with pgvector 0.8.x. Run as an ordinary local user. `pg_config --bindir` must point to the PostgreSQL installation with pgvector.
 
@@ -10,7 +10,7 @@ Install `uv` and PostgreSQL server tools with pgvector 0.8.x. Run as an ordinary
 ./scripts/dev --demo
 ```
 
-The command starts an isolated socket-only Postgres cluster, seeds fabricated rows, applies the migrations, and starts FastAPI and a worker with the stub model. At the default 1,800-second quiet period, it demonstrates gather-only preview, a personal template, and cited PDF export from a three-section report. An injected clock exercises the internal automatic next-quarter path. The chat demo proposes and previews a two-bank section, resumes the event stream, accepts the patch, shows the diff and saves. The fixture cluster is removed on exit.
+The command starts an isolated socket-only Postgres cluster, seeds fabricated rows, applies the migrations, and starts FastAPI and a worker with the stub model. At the default 1,800-second quiet period, it demonstrates gather-only preview, a personal template, and cited PDF export from a three-section report. An injected clock exercises the internal automatic next-quarter path. The chat demo proposes and previews a two-bank section, resumes the event stream, accepts the patch, shows the diff and saves. An enabled schedule also publishes two synthetic quarters, advances its cursor, and waits for the next period. The fixture cluster is removed on exit.
 
 To keep the synthetic PDF, run `AEGIS_DEMO_PDF=/path/to/new-report.pdf ./scripts/dev --demo` with a new output path.
 
@@ -32,9 +32,9 @@ Use `bank` for a single symbol, `banks` for up to 12 explicit symbols, or `peer_
 
 Create a conversation with `POST /v1/conversations` using a draft ID and fiscal period. Post a turn with a request key to the conversation's `/turns` resource. Read the turn resource as JSON or connect to its `/events` stream with `Last-Event-ID` to resume. Submit `/accept` with the proposal revision to apply it to the draft. Use `/cancel` to end a queued or running turn. Save through the existing draft endpoint. [API contract](api/openapi.json)
 
-Schedule definitions support enable, pause, pinned version and an explicit next period. The enqueue endpoint runs that definition through the automatic quiet-period path. The owner can inspect recent scheduled runs at `/schedule/runs`. Calendar-driven submission remains a G6 task.
+Enable a schedule to publish the pinned version when the target quarter's input markers settle. The cursor advances on complete publication. Required data defaults to complete. Set a deadline to allow provisional publication. Schedule period status includes missing scopes, the next check and the current output. Corrections can supersede it within the configured window. [Schedule and operations](docs/integration/operations.md)
 
-Run `uv run --no-sync python scripts/eval_chat.py` for the synthetic chat cases. The theme, document and peer harnesses use read-only source access. `eval_documents.py --claims` adds shortlisted units and final cited claims to the ranking output. Opt-in `--gateway real` supports a local credentials hook. The source harnesses use configured embeddings in that mode. [Evaluation guide](docs/integration/evaluation.md), [S-006 acceptance commands](docs/collab/status/S-006.md)
+Run `uv run --no-sync python scripts/eval_chat.py` for the synthetic chat cases. The theme, document and peer harnesses use read-only source access. `eval_documents.py --claims` adds shortlisted units and final cited claims to the ranking output. Opt-in `--gateway real` supports a local credentials hook. The source harnesses use configured embeddings in that mode. [Evaluation guide](docs/integration/evaluation.md), [S-007 acceptance commands](docs/collab/status/S-007.md)
 
 ## Runtime configuration
 
@@ -52,4 +52,4 @@ Use separate `SOURCE_DATABASE_URL` (SELECT-only) and `RPT_DATABASE_URL` (runtime
 
 The [page index](docs/sources/01_index.md) links the 16 original source pages. The [catalog addendum](docs/sources/PACK_v1.1_corrections.md) links the exact R-002 definitions now reflected in the source fixture. Original images and unredacted text stay local. The public briefing and review transcripts mark public-hygiene removals.
 
-The [generated API contract](api/openapi.json), [design](DESIGN.md) and [architecture plan](docs/collab/plans/PLAN.md) describe the current boundary. Use the [collaboration protocol](docs/collab/README.md), [tracker](docs/collab/TRACKER.md), [question log](docs/collab/QUESTIONS.md), [assumptions](docs/collab/ASSUMPTIONS.md) and [decisions](docs/collab/DECISIONS.md). Gate G5 awaits R-006. [S-006](docs/collab/status/S-006.md)
+The [generated API contract](api/openapi.json), [design](DESIGN.md) and [architecture plan](docs/collab/plans/PLAN.md) describe the current boundary. Use the [collaboration protocol](docs/collab/README.md), [tracker](docs/collab/TRACKER.md), [question log](docs/collab/QUESTIONS.md), [assumptions](docs/collab/ASSUMPTIONS.md) and [decisions](docs/collab/DECISIONS.md). Gate G6 awaits R-007. [S-007](docs/collab/status/S-007.md)

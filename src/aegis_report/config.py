@@ -1,7 +1,34 @@
 import json
 import os
+import re
+import ssl
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
+
+DEFAULT_CHAT_CALL_SECONDS = 20.0
+DEFAULT_CHAT_TURN_SECONDS = 60.0
+
+
+def model_header_from_env() -> str | None:
+    header = os.getenv("INTERNAL_LLM_MODEL_HEADER") or None
+    if header and (not re.fullmatch(r"[A-Za-z0-9-]{1,64}", header) or header.lower() in {
+        "authorization", "proxy-authorization", "cookie", "host", "content-length", "transfer-encoding", "content-type",
+    }):
+        raise ValueError("INTERNAL_LLM_MODEL_HEADER must be a custom HTTP header name")
+    return header
+
+
+def gateway_tls() -> ssl.SSLContext | bool:
+    bundle = os.getenv("INTERNAL_LLM_CA_BUNDLE")
+    return ssl.create_default_context(cafile=bundle) if bundle else True
+
+
+def chat_timing_from_env() -> tuple[float, float]:
+    call = float(os.getenv("CHAT_CALL_SECONDS", str(DEFAULT_CHAT_CALL_SECONDS)))
+    turn = float(os.getenv("CHAT_TURN_SECONDS", str(DEFAULT_CHAT_TURN_SECONDS)))
+    if not 1 <= call <= 60 or not call <= turn <= 180:
+        raise ValueError("Chat timing requires 1–60 seconds per call and a turn budget of at least one call, up to 180 seconds")
+    return call, turn
 
 
 @dataclass(frozen=True)
@@ -23,6 +50,10 @@ class Settings:
     earnings_distance: float = 0.35
     slides_distance: float = 0.35
     rts_distance: float = 0.35
+    model_header: str | None = None
+    chat_call_seconds: float = DEFAULT_CHAT_CALL_SECONDS
+    chat_turn_seconds: float = DEFAULT_CHAT_TURN_SECONDS
+    schedule_poll_seconds: float = 60
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -43,6 +74,7 @@ class Settings:
         quiet = float(os.environ.get("QUIET_SECONDS", "1800"))
         poll = float(os.environ.get("WORKER_POLL_SECONDS", "1"))
         retention = int(os.environ.get("PREVIEW_RETENTION_DAYS", "7"))
+        schedule_poll = float(os.environ.get("SCHEDULE_POLL_SECONDS", "60"))
         if not 0 <= quiet <= 86400 or not 0 < poll <= 60 or not 1 <= retention <= 365:
             raise ValueError("Invalid worker timing or retention")
         llm_url = os.environ.get("INTERNAL_LLM_URL")
@@ -74,5 +106,5 @@ class Settings:
             report_dsn, source_dsn, secret, local, local_user, auth_url,
             llm_url, os.environ.get("INTERNAL_LLM_API_KEY"), model,
             os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large"),
-            quiet, poll, retention, currencies, *distances,
+            quiet, poll, retention, currencies, *distances, model_header_from_env(), *chat_timing_from_env(), schedule_poll,
         )

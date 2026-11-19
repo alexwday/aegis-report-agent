@@ -570,6 +570,72 @@
         "title": "ConversationCreate",
         "type": "object"
       },
+      "CorrectionChange": {
+        "additionalProperties": false,
+        "properties": {
+          "bank": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank"
+          },
+          "change": {
+            "enum": [
+              "added",
+              "changed",
+              "removed"
+            ],
+            "title": "Change",
+            "type": "string"
+          },
+          "period": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Period"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "section_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Section Id"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SourceName"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "scope",
+          "change"
+        ],
+        "title": "CorrectionChange",
+        "type": "object"
+      },
       "DetailChange": {
         "additionalProperties": false,
         "properties": {
@@ -939,6 +1005,16 @@
             "const": "transcripts",
             "title": "Source",
             "type": "string"
+          },
+          "terms": {
+            "items": {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 8,
+            "title": "Terms",
+            "type": "array"
           },
           "topics": {
             "items": {
@@ -1365,6 +1441,18 @@
             "title": "Stable",
             "type": "boolean"
           },
+          "stable_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stable At"
+          },
           "state": {
             "$ref": "#/components/schemas/Readiness"
           }
@@ -1614,6 +1702,7 @@
             "type": "integer"
           },
           "kind": {
+            "description": "For the same fiscal quarter over the last N years, use same_quarter_years (current first). Use year_sequence only when oldest-to-newest year-by-year order is requested. For consecutive quarters use trailing_quarters, or quarter_sequence for chronological order.",
             "enum": [
               "trailing_quarters",
               "same_quarter_years",
@@ -1905,6 +1994,21 @@
           "period": {
             "$ref": "#/components/schemas/Period"
           },
+          "publication": {
+            "anyOf": [
+              {
+                "enum": [
+                  "complete",
+                  "provisional"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication"
+          },
           "readiness": {
             "additionalProperties": {
               "$ref": "#/components/schemas/Observation"
@@ -2117,15 +2221,226 @@
         "title": "SavedVersion",
         "type": "object"
       },
+      "SchedulePeriodStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "checked_at": {
+            "format": "date-time",
+            "title": "Checked At",
+            "type": "string"
+          },
+          "correction_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correction Until"
+          },
+          "current_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "complete",
+                  "provisional"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Kind"
+          },
+          "current_run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Run Id"
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "integer"
+          },
+          "last_correction": {
+            "items": {
+              "$ref": "#/components/schemas/CorrectionChange"
+            },
+            "title": "Last Correction",
+            "type": "array"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "missing": {
+            "items": {
+              "$ref": "#/components/schemas/Observation"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "next_check_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Check At"
+          },
+          "output_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Url"
+          },
+          "period": {
+            "$ref": "#/components/schemas/Period"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "readiness": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Observation"
+            },
+            "title": "Readiness",
+            "type": "object"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "run_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run State"
+          },
+          "state": {
+            "enum": [
+              "waiting_for_data",
+              "ready_to_run",
+              "running",
+              "published",
+              "provisional",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "period",
+          "version",
+          "generation",
+          "state",
+          "run_state",
+          "reason",
+          "message",
+          "next_check_at",
+          "checked_at",
+          "current_run_id",
+          "current_kind",
+          "output_url",
+          "published_at",
+          "correction_until",
+          "last_correction",
+          "readiness",
+          "missing"
+        ],
+        "title": "SchedulePeriodStatus",
+        "type": "object"
+      },
       "ScheduleResponse": {
         "additionalProperties": false,
         "properties": {
+          "correction_days": {
+            "title": "Correction Days",
+            "type": "integer"
+          },
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
           },
+          "next_period": {
+            "$ref": "#/components/schemas/Period"
+          },
           "period": {
             "$ref": "#/components/schemas/Period"
+          },
+          "provisional_after_hours": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provisional After Hours"
+          },
+          "quiet_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quiet Seconds"
           },
           "report_id": {
             "format": "uuid",
@@ -2136,6 +2451,10 @@
             "title": "Revision",
             "type": "integer"
           },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          },
           "version": {
             "title": "Version",
             "type": "integer"
@@ -2145,8 +2464,13 @@
           "report_id",
           "version",
           "period",
+          "next_period",
           "enabled",
-          "revision"
+          "revision",
+          "timezone",
+          "quiet_seconds",
+          "correction_days",
+          "provisional_after_hours"
         ],
         "title": "ScheduleResponse",
         "type": "object"
@@ -2154,6 +2478,13 @@
       "ScheduleWrite": {
         "additionalProperties": false,
         "properties": {
+          "correction_days": {
+            "default": 14,
+            "maximum": 90.0,
+            "minimum": 0.0,
+            "title": "Correction Days",
+            "type": "integer"
+          },
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
@@ -2172,6 +2503,39 @@
           },
           "period": {
             "$ref": "#/components/schemas/Period"
+          },
+          "provisional_after_hours": {
+            "anyOf": [
+              {
+                "maximum": 2160.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provisional After Hours"
+          },
+          "quiet_seconds": {
+            "anyOf": [
+              {
+                "maximum": 86400.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quiet Seconds"
+          },
+          "timezone": {
+            "default": "America/Toronto",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Timezone",
+            "type": "string"
           },
           "version": {
             "minimum": 1.0,
@@ -2206,6 +2570,17 @@
             ],
             "title": "Error Code"
           },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -2213,6 +2588,22 @@
           },
           "period": {
             "$ref": "#/components/schemas/Period"
+          },
+          "publication_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "published",
+                  "provisional",
+                  "superseded"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication State"
           },
           "schedule_revision": {
             "title": "Schedule Revision",
@@ -2241,7 +2632,9 @@
           "schedule_revision",
           "state",
           "error_code",
-          "created_at"
+          "created_at",
+          "generation",
+          "publication_state"
         ],
         "title": "ScheduledRun",
         "type": "object"
@@ -2905,6 +3298,17 @@
           "method": {
             "title": "Method",
             "type": "string"
+          },
+          "source_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Text"
           },
           "text": {
             "title": "Text",
@@ -4513,6 +4917,78 @@
           }
         ],
         "summary": "Enqueue Schedule"
+      }
+    },
+    "/v1/reports/{report_id}/schedule/periods": {
+      "get": {
+        "operationId": "schedule_periods_v1_reports__report_id__schedule_periods_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "report_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Report Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SchedulePeriodStatus"
+                  },
+                  "title": "Response Schedule Periods V1 Reports  Report Id  Schedule Periods Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Schedule Periods"
       }
     },
     "/v1/reports/{report_id}/schedule/runs": {

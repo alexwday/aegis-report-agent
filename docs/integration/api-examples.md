@@ -1,7 +1,7 @@
 # API examples from the local fixture
 
 Regenerate with `uv run --no-sync python scripts/capture_api_examples.py` while
-`./scripts/dev` is running. Responses are selected fields from the live synthetic API.
+`SCHEDULE_POLL_SECONDS=0.25 ./scripts/dev` is running. Responses are selected fields from the live synthetic API.
 Resource IDs are normalized consistently. Values and state transitions come from the fixture.
 
 ### GET `/v1/templates`
@@ -332,7 +332,8 @@ HTTP 201 response
   "period": {
     "year": 2090,
     "quarter": 2
-  }
+  },
+  "quiet_seconds": 2
 }
 ```
 
@@ -346,8 +347,16 @@ HTTP 200 response
     "year": 2090,
     "quarter": 2
   },
+  "next_period": {
+    "year": 2090,
+    "quarter": 2
+  },
   "enabled": true,
-  "revision": 1
+  "revision": 1,
+  "timezone": "America/Toronto",
+  "quiet_seconds": 2.0,
+  "correction_days": 14,
+  "provisional_after_hours": null
 }
 ```
 
@@ -374,13 +383,32 @@ HTTP 200 response
       "year": 2090,
       "quarter": 2
     },
-    "state": "queued",
+    "state": "waiting",
     "error_code": null
   }
 ]
 ```
 
-The schedule run ID is also a normal run resource. The fixture's worker applies the quiet period.
+### GET `/v1/reports/00000000-0000-4000-8000-000000000002/schedule/periods?limit=3`
+
+HTTP 200 response
+
+```json
+[
+  {
+    "period": {
+      "year": 2090,
+      "quarter": 2
+    },
+    "state": "published",
+    "generation": 1,
+    "current_kind": "complete",
+    "output_url": "/v1/runs/00000000-0000-4000-8000-000000000009/output.json"
+  }
+]
+```
+
+A pending check returns a normal run ID. The poller adopts it when inputs are stable.
 
 ### GET `/v1/runs/00000000-0000-4000-8000-000000000004/output.pdf`
 

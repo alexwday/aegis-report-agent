@@ -134,6 +134,8 @@ class Reports:
                     UPDATE rpt.schedules SET enabled = false, revision = revision + 1
                     WHERE report_id = %s AND enabled
                 """, (report_id,))
+                self._pause_periods(conn, report_id)
+                self._close_pending_schedule_requests(conn, report_id)
             return updated
 
     def _report_version(self, conn, owner, report_id, version, *, active=True):
@@ -289,7 +291,9 @@ class Reports:
 
     def _schedule(self, conn, report_id):
         return conn.execute("""
-            SELECT report_id, version, period, enabled, revision FROM rpt.schedules WHERE report_id = %s
+            SELECT report_id, version, period, enabled, revision, timezone, quiet_seconds, correction_days,
+                   provisional_after_hours, coalesce(dispatch_period, period) AS next_period
+            FROM rpt.schedules WHERE report_id = %s
         """, (report_id,)).fetchone()
 
     def get_schedule(self, owner: bytes, report_id: UUID):
@@ -304,10 +308,45 @@ class Reports:
         with connect(self.dsn) as conn:
             self._report(conn, owner, report_id)
             return conn.execute("""
-                SELECT id, period, version, schedule_revision, state, error_code, created_at
+                SELECT id, period, version, schedule_revision, state, error_code, created_at,
+                       schedule_generation AS generation, publication_state
                 FROM rpt.runs WHERE owner_key = %s AND report_id = %s AND schedule_revision IS NOT NULL
                 ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s
             """, (owner, report_id, limit, offset)).fetchall()
+
+    def schedule_periods(self, owner: bytes, report_id: UUID, limit: int, offset: int):
+        with connect(self.dsn) as conn:
+            self._report(conn, owner, report_id)
+            return conn.execute("""
+                SELECT p.period, p.version, p.generation, r.state AS run_state,
+                       CASE WHEN p.status = 'ready_to_run' AND r.state IN ('running', 'failed') THEN r.state
+                            ELSE p.status END AS state,
+                       coalesce(p.reason, CASE WHEN p.status = 'ready_to_run' THEN r.error_code END) AS reason,
+                       CASE WHEN p.status = 'published' AND p.correction_until < now()
+                            THEN NULL ELSE p.next_check_at END AS next_check_at,
+                       p.checked_at, p.current_run_id, p.current_kind, p.published_at,
+                       p.correction_until, p.last_correction, p.readiness
+                FROM rpt.schedule_periods p LEFT JOIN rpt.runs r ON r.id = p.latest_run_id
+                WHERE p.report_id = %s
+                ORDER BY (p.period->>'year')::integer DESC, (p.period->>'quarter')::integer DESC
+                LIMIT %s OFFSET %s
+            """, (report_id, limit, offset)).fetchall()
+
+    @staticmethod
+    def _pause_periods(conn, report_id):
+        conn.execute("""
+            UPDATE rpt.schedule_periods SET status = 'failed', reason = 'schedule_inactive_or_changed',
+                next_check_at = NULL
+            WHERE report_id = %s AND status IN ('waiting_for_data', 'ready_to_run')
+        """, (report_id,))
+
+    @staticmethod
+    def _close_pending_schedule_requests(conn, report_id):
+        conn.execute("""
+            UPDATE rpt.runs SET state = 'failed', error_code = 'schedule_inactive_or_changed'
+            WHERE report_id = %s AND schedule_revision IS NOT NULL AND schedule_generation IS NULL
+              AND state IN ('queued', 'waiting')
+        """, (report_id,))
 
     def put_schedule(self, owner: bytes, report_id: UUID, request: ScheduleWrite):
         with connect(self.dsn) as conn:
@@ -316,14 +355,24 @@ class Reports:
             current = self._schedule(conn, report_id)
             if request.expected_revision != (current["revision"] if current else None):
                 raise HTTPException(409, "stale_schedule_revision")
-            return conn.execute("""
-                INSERT INTO rpt.schedules (report_id, version, period, enabled, revision)
-                VALUES (%s, %s, %s, %s, 1)
+            conn.execute("""
+                INSERT INTO rpt.schedules (report_id, version, period, enabled, revision, timezone, quiet_seconds,
+                                           correction_days, provisional_after_hours)
+                VALUES (%s, %s, %s, %s, 1, %s, %s, %s, %s)
                 ON CONFLICT (report_id) DO UPDATE
                 SET version = excluded.version, period = excluded.period, enabled = excluded.enabled,
-                    revision = rpt.schedules.revision + 1
-                RETURNING report_id, version, period, enabled, revision
-            """, (report_id, request.version, Jsonb(request.period.model_dump()), request.enabled)).fetchone()
+                    timezone = excluded.timezone, quiet_seconds = excluded.quiet_seconds,
+                    correction_days = excluded.correction_days, provisional_after_hours = excluded.provisional_after_hours,
+                    dispatch_period = CASE WHEN rpt.schedules.period = excluded.period
+                                           THEN rpt.schedules.dispatch_period END,
+                    revision = rpt.schedules.revision + 1, next_poll_at = now()
+            """, (report_id, request.version, Jsonb(request.period.model_dump()), request.enabled, request.timezone,
+                  request.quiet_seconds, request.correction_days, request.provisional_after_hours))
+            if current:
+                self._close_pending_schedule_requests(conn, report_id)
+            if not request.enabled:
+                self._pause_periods(conn, report_id)
+            return self._schedule(conn, report_id)
 
     def enqueue_schedule(self, owner: bytes, report_id: UUID):
         with connect(self.dsn) as conn:
@@ -331,14 +380,26 @@ class Reports:
             schedule = self._schedule(conn, report_id)
             if schedule is None or not schedule["enabled"]:
                 raise HTTPException(409, "schedule_inactive")
-            period = Period.model_validate(schedule["period"])
+            period = Period.model_validate(schedule["next_period"])
+            existing = conn.execute("""
+                SELECT latest_run_id FROM rpt.schedule_periods WHERE report_id = %s AND period = %s
+                  AND version = %s AND latest_run_id IS NOT NULL
+            """, (report_id, Jsonb(period.model_dump()), schedule["version"])).fetchone()
+            if existing:
+                return {"id": existing["latest_run_id"]}
             request = RunRequest(
                 version=schedule["version"], period=period,
                 request_key=f"schedule:{report_id}:{schedule['revision']}:{period.year}:{period.quarter}",
             )
-            return self._insert_generation(
+            conn.execute("UPDATE rpt.schedules SET next_poll_at = now() WHERE report_id = %s", (report_id,))
+            queued = self._insert_generation(
                 conn, owner, report_id, request, "automatic", schedule_revision=schedule["revision"],
             )
+            conn.execute("""
+                UPDATE rpt.runs SET state = 'waiting'
+                WHERE id = %s AND state = 'queued' AND schedule_generation IS NULL
+            """, (queued["id"],))
+            return queued
 
     def enqueue_preview(self, owner: bytes, draft_id: UUID, request: PreviewRequest):
         with connect(self.dsn) as conn:
@@ -396,7 +457,7 @@ class Reports:
             for claim in section.get("claims", []):
                 for citation in claim["citations"]:
                     if citation["id"] == evidence_id:
-                        return citation_result(citation, claim["text"], detail)
+                        return citation_result(citation, claim.get("source_text") or claim["text"], detail)
             for stage in section.get("stage_outputs", []):
                 if stage["kind"] != "retrieve":
                     continue

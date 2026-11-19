@@ -15,7 +15,7 @@ All paths in this table are relative to the /v1 namespace.
 | Preview and diff | Pick a fiscal period, optional section and eligible baseline. Display stages, resolved fiscal periods and per-bank, claim, note, comparison and peer changes. | POST /drafts/{id}/previews, poll /runs/{id}, then open output.json. The baseline is a successful saved run of the draft's base version and period. Gather-only requires a staged section and omits the baseline. |
 | Evidence and citations | Show cited rows and claims. Open a focusable drawer with the locator and short excerpt. Show available evidence, no matching evidence, and unavailable scopes by source, bank and period. | Group readiness entries by section_id. Use message for current per-scope wording. Look up opaque citation IDs within the run. |
 | Peer comparisons | Display fiscal scope, units, currency provenance, high, low and median. Show “Higher is better” or “Lower is better” for ranks. For highest_to_lowest, display ordered_values without rank badges. List missing symbols. | Use sections[].peers[] and peer diff entries. An older artifact may lack direction. Use “Historical order” for those artifacts. |
-| Schedule and history | Show enabled or paused state, pinned version, next period and revision. Offer explicit enqueue and recent runs with state and error wording. | GET and PUT /schedule with expected_revision for edits. Read /schedule/runs, then open a run. Calendar dispatch belongs to G6. |
+| Schedule and history | Show enabled or paused state, pinned version, starting quarter, next target and revision. Offer optional provisional timing and a correction window. Display missing bank and source scopes, next check, latest correction, and the current output link. | GET and PUT /schedule with expected_revision. Poll /schedule/periods for the current pointer and /schedule/runs for publication history, including superseded generations. A request to check cannot skip readiness or the quiet period. |
 | Exports | Offer HTML and JSON after a run succeeds. Offer PDF for a finished saved report. | Download output.html, output.json, or output.pdf through the authorized run. Use a sandbox when displaying HTML within the host. |
 
 Fiscal periods are vendor labels, for example FY2090 Q2 with JSON {"year":2090,"quarter":2}.
@@ -59,3 +59,22 @@ The host supplies the bearer token over HTTPS. The API verifies it upstream and 
 Fetch GET /v1/reasons for user-facing sentences keyed by stable machine codes. The same catalog supplies chat tool messages and the preview scope wording. For a new code, show a safe generic message and record the code separately. A structured 422 contains loc, msg and type. Render text fields and excerpts as text nodes. [Reason catalog](../../src/aegis_report/reasons.py)
 
 Use labeled controls, descriptive headings, visible focus and text labels for status. Make subsection reorder possible with the keyboard. On opening the citation drawer, focus its heading and restore focus to the citation trigger when the drawer closes. Announce user actions and the final reply through a polite live region. Reserve alerts for errors requiring attention. Test narrow viewports, browser zoom and keyboard-only use. [WCAG 2.2](https://www.w3.org/TR/WCAG22/), [status messages guidance](https://www.w3.org/WAI/WCAG22/Understanding/status-messages.html)
+
+
+## Automatic publication states
+
+| State | Display |
+|---|---|
+| waiting_for_data | “Waiting for data” with pending bank, source, period, reason, and next check. Show an existing current output alongside progress when a correction is pending. |
+| ready_to_run | “Ready to run” after stable inputs were queued. A transient retry can add a failure reason and a next check. |
+| running | “Running” with a generation number and the existing current output if present. |
+| provisional | Label the output in the list and opened report. Show the required scopes still pending. The next target remains this quarter. |
+| published | Show the current complete output, publication time and latest correction changes. The schedule's next target advances separately. |
+| failed | Show the shared reason wording and retain the latest valid output when one exists. |
+| superseded | Show only in generation history for a replaced publication. Link current viewing through /schedule/periods. |
+
+Fetch schedule periods alongside history and refresh around next_check_at or on demand. Use the owner's authorization on output_url. Use the same badge in export controls and opened results for publication provisional.
+
+## Known limitations
+
+The Functions Assist peer guidance is validated for the core Canadian banks. Use single-bank views for other banks until comparable peer and calendar mappings are verified. The API represents vendor fiscal labels and unconfirmed currency mappings. Claims are extractive. Supplement, event, and Pillar 3 sources are disabled in this release.

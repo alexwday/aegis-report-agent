@@ -239,6 +239,31 @@ def demonstrate_chat(client, wait=wait_for_run, show=print):
     show(f"  Saved report version {delivery['version']} explicitly.")
 
 
+def demonstrate_scheduler(client, show=print):
+    draft = submit(client, "POST", "/v1/drafts", {"bank": "SYN1"})
+    saved = submit(client, "POST", f"/v1/drafts/{draft['id']}/save", {"revision": draft["revision"]})
+    path = f"/v1/reports/{saved['report_id']}/schedule"
+    schedule = submit(client, "PUT", path, {
+        "version": saved["version"], "period": Q2, "enabled": True, "quiet_seconds": 1,
+    })
+    show(f"Enabled calendar poller at FY{schedule['next_period']['year']} Q{schedule['next_period']['quarter']}.")
+    deadline = time.monotonic() + 35
+    while time.monotonic() < deadline:
+        rows = submit(client, "GET", path + "/periods")
+        complete = {row["period"]["quarter"]: row for row in rows if row["current_kind"] == "complete"}
+        if 2 in complete and 3 in complete:
+            for quarter in (2, 3):
+                result = submit(client, "GET", complete[quarter]["output_url"])
+                assert result["publication"] == "complete"
+                show(f"  FY2090 Q{quarter}: {complete[quarter]['state']} at generation {complete[quarter]['generation']}.")
+            next_period = submit(client, "GET", path)["next_period"]
+            assert next_period == {"year": 2090, "quarter": 4}
+            show(f"  Next target after publication: FY{next_period['year']} Q{next_period['quarter']}.")
+            return
+        time.sleep(0.15)
+    raise RuntimeError("Calendar poller did not publish both fixture quarters")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("base_url", nargs="?", default="http://127.0.0.1:8000")
@@ -253,6 +278,7 @@ def main():
         if settings:
             demonstrate_automatic(client, settings, delivery["saved"], pdf_output=args.pdf_output)
             demonstrate_chat(client)
+            demonstrate_scheduler(client)
 
 
 if __name__ == "__main__":

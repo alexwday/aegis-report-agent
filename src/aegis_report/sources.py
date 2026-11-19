@@ -60,6 +60,7 @@ class Scope:
     segment: str = "Enterprise"
     topics: tuple[str, ...] = ()
     terms: tuple[str, ...] = ()
+    include_definitions: bool = False
 
 
 ChangeBasis = Literal["basis_points", "percent_change", "unknown"]
@@ -213,7 +214,7 @@ class BenchmarkingSource:
             state, reason = Readiness.INCOMPLETE, "null_benchmark_observation"
         else:
             state, reason = Readiness.READY, None
-        return Probe(state=state, reason=reason, marker=opaque_id(marker))
+        return Probe(state=state, reason=reason, marker=opaque_id(marker, rows))
 
     def search(self, conn: SourceConnection, scope: Scope, vector: list[float] | None = None) -> list[BenchmarkFact]:
         if scope.metric is None:
@@ -392,7 +393,7 @@ class EarningsSource:
             blocks.append(EarningsBlock(
                 bank=scope.bank.symbol, period=scope.period, generation="legacy",
                 edition=edition["transcript_type"], version=edition["version_id"], text=text,
-                topics=tuple(row["classification_names"] or ()), distance=row["distance"],
+                topics=tuple(row["classification_names"] or ()), terms=scope.terms, distance=row["distance"],
                 speaker=f"{edition['event_id']}:{row['speaker_block_id']}",
                 citation=Citation(id=opaque_id("legacy", scope.bank.symbol, edition["event_id"],
                                                edition["version_id"], edition["latest"], coordinates),
@@ -425,7 +426,7 @@ class EarningsSource:
             EarningsBlock(
                 bank=scope.bank.symbol, period=scope.period, generation="unified", edition=transcript_type,
                 version=identity[1], text=self._verified_text(row["body"]),
-                topics=keyword_labels(row["keywords"]), distance=row["distance"],
+                topics=keyword_labels(row["keywords"]), terms=scope.terms, distance=row["distance"],
                 citation=Citation(id=opaque_id("unified", identity, edition["file_id"], edition["file_hash"],
                                                row["chunk_id"]),
                                   source=SourceName.EARNINGS,

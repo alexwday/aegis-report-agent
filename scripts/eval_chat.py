@@ -1,14 +1,16 @@
 """Evaluate synthetic report-chat requests locally. Real mode uses the configured gateway."""
 import argparse
 import json
+import re
 from pathlib import Path
 from time import monotonic
 
-import httpx
-from eval_support import evaluation_gateway
+from eval_support import evaluation_client, evaluation_gateway
 
-from aegis_report.chat_agent import TURN_SECONDS, run_model_turn
-from aegis_report.chat_models import TOOL_MODELS, apply_operations
+from aegis_report.chat_agent import run_model_turn
+from aegis_report.chat_models import TOOL_MODELS, apply_operations, minimal_operations
+from aegis_report.config import chat_timing_from_env
+from aegis_report.gateway import GatewayError
 from aegis_report.models import ReportSpec
 from aegis_report.stub_planner import plan_stub
 
@@ -39,16 +41,25 @@ def includes(actual, expected):
 
 def evaluate_case(case, gateway):
     calls, edits = [], []
+    final = None
+    unchanged = False
 
     def invoke(name, data):
+        nonlocal unchanged
         if name not in TOOL_MODELS:
             return {"error": "tool_not_allowed"}
         try:
             args = TOOL_MODELS[name][0].model_validate(data)
             calls.append(name)
             if name == "propose_patch":
-                apply_operations(DRAFT, args.operations)
-                edits.extend(item.model_dump(mode="json") for item in args.operations)
+                operations = minimal_operations(DRAFT, args.operations, case["request"])
+                if not operations:
+                    return {"error": "proposal_exceeds_requested_edits"}
+                updated = apply_operations(DRAFT, operations)
+                if updated == DRAFT:
+                    unchanged = True
+                    return {"unchanged": True}
+                edits.extend(item.model_dump(mode="json") for item in operations)
                 return {"requires_acceptance": True}
         except ValueError:
             return {"error": "invalid_tool_arguments_or_patch"}
@@ -68,10 +79,16 @@ def evaluate_case(case, gateway):
         return {"state": "ready"}
 
     if hasattr(gateway, "plan_chat"):
-        run_model_turn(gateway, case["request"], [], invoke, monotonic() + TURN_SECONDS)
+        call_seconds, turn_seconds = chat_timing_from_env()
+        final = run_model_turn(gateway, case["request"], [], invoke, monotonic() + turn_seconds, call_seconds)
     else:
         for name, args in plan_stub(case["request"], DRAFT):
             invoke(name, args)
+    if case.get("no_op"):
+        acknowledged = final and "read_draft" in calls and re.search(
+            r"\b(?:already|unchanged|no (?:edits?|changes?)|is set to)\b", final, re.I,
+        )
+        return not edits and bool(unchanged or acknowledged)
     if "operation" in case:
         return len(edits) == 1 and includes(edits[0], case["operation"])
     return case["tool"] in calls and not edits
@@ -81,20 +98,38 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gateway", choices=("stub", "real"), default="stub")
     parser.add_argument("--credentials-hook", metavar="MODULE:FUNCTION")
+    parser.add_argument("--repeat", type=int, default=1)
+    parser.add_argument("--minimum-pass-rate", type=float)
     args = parser.parse_args()
+    if not 1 <= args.repeat <= 20:
+        parser.error("--repeat must be between 1 and 20.")
+    minimum = args.minimum_pass_rate if args.minimum_pass_rate is not None else (0.9 if args.gateway == "real" else 1.0)
+    if not 0 <= minimum <= 1:
+        parser.error("--minimum-pass-rate must be a fraction from zero to one.")
     cases = json.loads(CASES.read_text())
-    with httpx.Client(trust_env=False) as client:
+    with evaluation_client(args.gateway) as client:
         try:
             gateway = evaluation_gateway(args.gateway, client, args.credentials_hook)
         except ValueError as exc:
             parser.error(str(exc))
         passed = 0
         for index, case in enumerate(cases, 1):
-            ok = evaluate_case(case, gateway)
-            passed += ok
-            print(f"{index:02} {'PASS' if ok else 'FAIL'} {case['request']}")
-    print(f"{passed}/{len(cases)} matched expected operations or tools ({args.gateway})")
-    raise SystemExit(0 if passed == len(cases) else 1)
+            succeeded = 0
+            for run in range(1, args.repeat + 1):
+                started = monotonic()
+                try:
+                    ok = evaluate_case(case, gateway)
+                    detail = ""
+                except GatewayError as exc:
+                    ok, detail = False, f" ({exc})"
+                succeeded += ok
+                print(f"{index:02}.{run:02} {'PASS' if ok else 'FAIL'}{detail} {monotonic() - started:.2f}s {case['request']}")
+            passed += succeeded
+            print(f"{index:02} pass rate {succeeded}/{args.repeat} ({succeeded / args.repeat:.0%})")
+    total = len(cases) * args.repeat
+    print(f"{passed}/{total} matched expected operations or tools ({args.gateway}), {passed / total:.1%}")
+    raise SystemExit(0 if passed / total >= minimum else 1)
+
 
 
 if __name__ == "__main__":

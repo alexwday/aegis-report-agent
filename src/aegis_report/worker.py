@@ -1,7 +1,8 @@
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from random import uniform
+from threading import Event, Thread
 from time import sleep
 from uuid import uuid4
 
@@ -12,17 +13,19 @@ from psycopg.types.json import Jsonb
 from .auth import OwnerStatusChecker, UnwiredOwnerStatus
 from .chat_agent import ChatAgent
 from .claims import shortlist_passages
-from .config import Settings
+from .config import Settings, gateway_tls
 from .db import connect
 from .diff import report_diff
 from .documents import build_sources
 from .engine import generate_report
-from .gateway import CredentialProvider, GatewayError, ModelGateway, build_gateway
-from .models import BenchmarkInput, EarningsInput, Period, ReportSpec, SectionInput, SourceName
+from .gateway import CredentialProvider, GatewayError, ModelGateway, RetryableGatewayError, build_gateway
+from .models import Period, ReportSpec
+from .notifications import NoOpNotifier, PublicationNotifier
 from .readiness import observe, record_observation
 from .reasons import reason_message
-from .repository import period_scopes
-from .sources import BankCatalog, Passage, Probe, Readiness, Scope, SourceIssue, opaque_id
+from .scheduler import Scheduler, is_latest_generation, publish
+from .scopes import physical_key, probe_scopes, requests_for
+from .sources import BankCatalog, Passage, Probe, Readiness, SourceIssue
 from .topics import search_terms
 
 logger = logging.getLogger(__name__)
@@ -30,68 +33,17 @@ MAX_ATTEMPTS = 3
 
 
 
-@dataclass(frozen=True)
-class RequestScope:
-    key: str
-    section_id: str
-    bank: str
-    period: Period
-    selector: SectionInput
-    instruction: str
-    peer_group: str | None = None
-
-    @property
-    def source(self) -> SourceName:
-        return SourceName(self.selector.source)
-
-    @property
-    def topics(self) -> tuple[str, ...]:
-        if isinstance(self.selector, EarningsInput):
-            return tuple(self.selector.topics)
-        if not isinstance(self.selector, BenchmarkInput) and self.selector.topic:
-            return (self.selector.topic,)
-        return ()
-
-    @property
-    def terms(self) -> tuple[str, ...]:
-        return tuple(self.selector.terms) if not isinstance(self.selector, (BenchmarkInput, EarningsInput)) else ()
-
-    def source_scope(self, bank) -> Scope:
-        if isinstance(self.selector, BenchmarkInput):
-            return Scope(bank, self.period, self.selector.metric, self.selector.segment)
-        return Scope(bank, self.period, topics=self.topics, terms=self.terms)
-
-    def describe(self) -> dict:
-        return {
-            "section_id": self.section_id, "source": self.source, "bank": self.bank, "period": self.period.model_dump(),
-            "required": self.selector.required, "selector": self.selector.model_dump(mode="json"),
-        }
-
-
-def requests_for(spec: ReportSpec, period: Period) -> list[RequestScope]:
-    shifts = period_scopes(spec, period)
-    return [
-        RequestScope(
-            (f"{section.id}:{index}:{offset}" if index else f"{section.id}:{offset}")
-            + (f":{bank}" if section.bank is None else ""),
-            section.id, bank, target, selector, section.instruction, section.peer_group,
-        )
-        for section in spec.sections
-        for offset, target in shifts[section.id].items()
-        for index, selector in enumerate(section.sources)
-        for bank in section.bank_symbols()
-    ]
-
-
 class Worker:
     def __init__(
         self, settings: Settings, gateway: ModelGateway,
         owner_status: OwnerStatusChecker | None = None, *, clock: Callable[[], datetime] | None = None,
+        notifier: PublicationNotifier | None = None,
     ):
         self.settings = settings
         self.gateway = gateway
         self.owner_status = owner_status or UnwiredOwnerStatus(settings.local)
         self.clock = clock or (lambda: datetime.now(UTC))
+        self.notifier = notifier or NoOpNotifier()
         self.catalog = BankCatalog()
         self.sources = build_sources(settings)
 
@@ -109,13 +61,15 @@ class Worker:
                     WHERE ((state IN ('queued', 'waiting') AND next_probe_at <= %s)
                         OR (state = 'running' AND lease_until <= %s))
                       AND (expires_at IS NULL OR expires_at > %s)
+                      AND (schedule_revision IS NULL OR schedule_generation IS NOT NULL)
                     ORDER BY next_probe_at, created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED
                 )
                 UPDATE rpt.runs r SET state = 'running', lease_token = %s, lease_until = %s,
                                       attempt_count = r.attempt_count + 1
                 FROM next_run WHERE r.id = next_run.id
                 RETURNING r.id, r.owner_key, r.mode, r.trigger_kind, r.report_id, r.period, r.spec,
-                          r.baseline_id, r.preview_section_id, r.readiness, r.lease_token, r.stop_after, r.schedule_revision
+                          r.baseline_id, r.preview_section_id, r.readiness, r.lease_token, r.stop_after, r.schedule_revision,
+                          r.schedule_generation, r.evidence_snapshot, r.publication_kind, r.attempt_count, r.version
             """, (now, now, now, uuid4(), now + timedelta(minutes=3))).fetchone()
 
     def run_one(self, now: datetime | None = None) -> bool:
@@ -126,6 +80,7 @@ class Worker:
         result, state, error_code = None, "failed", None
         readiness = job["readiness"]
         next_probe = started_at
+        managed = job["schedule_generation"] is not None
         try:
             if job["mode"] == "generate" and not self._active_owner(job):
                 raise SourceIssue(Readiness.UNKNOWN, "report_or_owner_inactive")
@@ -133,13 +88,19 @@ class Worker:
                 with connect(self.settings.report_dsn) as conn:
                     if not self._active_schedule(conn, job):
                         raise SourceIssue(Readiness.UNKNOWN, "schedule_inactive_or_changed")
+                    if managed and not is_latest_generation(conn, job):
+                        raise SourceIssue(Readiness.UNKNOWN, "schedule_generation_superseded")
             spec = ReportSpec.model_validate(job["spec"])
             period = Period.model_validate(job["period"])
             automatic = job["trigger_kind"] == "automatic"
             requests = requests_for(spec, period)
             try:
-                readiness, evidence = self._observe_sources(requests, readiness, started_at, automatic)
+                readiness, evidence = self._observe_sources(
+                    requests, readiness, started_at, automatic, pinned=job["evidence_snapshot"],
+                )
             except psycopg.Error:
+                if managed:
+                    raise SourceIssue(Readiness.UNKNOWN, "source_unavailable") from None
                 unavailable = Probe(state=Readiness.UNKNOWN, reason="source_unavailable")
                 readiness = {
                     item.key: observe(unavailable, {}, started_at, self.settings.quiet_seconds) | item.describe()
@@ -164,29 +125,78 @@ class Worker:
                     gather_only=job["stop_after"] == "gather",
                 )
                 result["readiness"] = readiness
+                if managed:
+                    result["publication"] = job["publication_kind"]
+                    self._verify_snapshot(requests, job["evidence_snapshot"])
+                    if not self._active_owner(job):
+                        raise SourceIssue(Readiness.UNKNOWN, "report_or_owner_inactive")
                 if job["baseline_id"] is not None:
                     self._apply_diff(job, result)
                 state = "succeeded"
-        except (GatewayError, SourceIssue) as exc:
-            error_code = exc.reason if isinstance(exc, SourceIssue) else str(exc)
+        except (GatewayError, SourceIssue, psycopg.Error) as exc:
+            result = None
+            error_code = exc.reason if isinstance(exc, SourceIssue) else (
+                "source_unavailable" if isinstance(exc, psycopg.Error) else str(exc)
+            )
+            transient = isinstance(exc, (RetryableGatewayError, psycopg.Error)) or error_code == "source_unavailable"
+            if managed and transient and job["attempt_count"] < MAX_ATTEMPTS:
+                state = "queued"
+                next_probe = (now or self.clock()) + timedelta(seconds=(2 ** job["attempt_count"]) + uniform(0.1, 0.7))
+            elif managed and transient:
+                error_code = "attempts_exhausted"
         except (ValueError, ArithmeticError):
             error_code = "invalid_report_input"
 
         finished_at = now or self.clock()
+        published = self._finalize(job, state, result, readiness, error_code, next_probe, finished_at)
+        if published:
+            self.notifier.published(*published)
+        return True
+
+    def _finalize(self, job, state, result, readiness, error_code, next_probe, finished_at):
+        managed = job["schedule_generation"] is not None
         with connect(self.settings.report_dsn) as conn:
-            if state == "succeeded" and job["schedule_revision"] is not None:
-                # Schedule mutations and archive take this same report lock first.
-                conn.execute("SELECT id FROM rpt.reports WHERE id = %s FOR SHARE", (job["report_id"],))
-                if not self._active_schedule(conn, job):
+            if job["schedule_revision"] is not None:
+                lock = "UPDATE" if managed else "SHARE"
+                conn.execute(f"SELECT id FROM rpt.reports WHERE id = %s FOR {lock}", (job["report_id"],))
+                if state in ("succeeded", "queued") and not self._active_schedule(conn, job):
                     state, result, error_code = "failed", None, "schedule_inactive_or_changed"
-            conn.execute("""
+                if state in ("succeeded", "queued") and managed and not is_latest_generation(conn, job):
+                    state, result, error_code = "failed", None, "schedule_generation_superseded"
+            updated = conn.execute("""
                 UPDATE rpt.runs SET state = %s, result = %s, readiness = %s, error_code = %s, next_probe_at = %s,
                                     lease_token = NULL, lease_until = NULL,
                                     attempt_count = CASE WHEN %s = 'waiting' THEN 0 ELSE attempt_count END
-                WHERE id = %s AND lease_token = %s AND lease_until > %s
+                WHERE id = %s AND lease_token = %s AND lease_until > %s RETURNING id
             """, (state, Jsonb(result) if result is not None else None, Jsonb(readiness), error_code, next_probe,
-                  state, job["id"], job["lease_token"], finished_at))
-        return True
+                  state, job["id"], job["lease_token"], finished_at)).fetchone()
+            if not updated:
+                return None
+            if error_code:
+                logger.info("report attempt state=%s failure_code=%s", state, error_code)
+            if managed and state == "succeeded":
+                return publish(conn, job, readiness, finished_at)
+            if managed and is_latest_generation(conn, job):
+                changed = error_code == "schedule_evidence_changed"
+                status = "ready_to_run" if state == "queued" else "waiting_for_data" if changed else "failed"
+                conn.execute("""
+                    UPDATE rpt.schedule_periods SET status = %s, reason = %s, next_check_at = %s
+                    WHERE report_id = %s AND period = %s
+                """, (status, error_code, next_probe if state == "queued" else finished_at if changed else None,
+                      job["report_id"], Jsonb(job["period"])))
+                if changed:
+                    conn.execute("""
+                        UPDATE rpt.schedules SET next_poll_at = least(next_poll_at, %s) WHERE report_id = %s
+                    """, (finished_at, job["report_id"]))
+        return None
+
+    def _verify_snapshot(self, requests, pinned):
+        with connect(self.settings.source_dsn, source=True) as conn:
+            for item, _scope, probe in probe_scopes(
+                conn, [item for item in requests if item.key in pinned], self.catalog, self.sources,
+            ):
+                if probe.state is not Readiness.READY or probe.marker != pinned[item.key]:
+                    raise SourceIssue(Readiness.INCOMPLETE, "schedule_evidence_changed")
 
     def _active_owner(self, job):
         with connect(self.settings.report_dsn) as conn:
@@ -235,53 +245,48 @@ class Worker:
                 continue
         return vectors
 
-    def _observe_sources(self, requests, previous, now, automatic):
+    def _observe_sources(self, requests, previous, now, automatic, *, pinned=None):
         vectors = self._vectors(requests, previous, automatic)
         with connect(self.settings.source_dsn, source=True) as source_conn:
-            banks, items, readiness = {}, [], {}
-            catalog = self.catalog.list(source_conn)
-            for item in requests:
-                if item.bank not in banks:
-                    try:
-                        banks[item.bank] = self.catalog.match(catalog, item.bank)
-                    except SourceIssue as issue:
-                        banks[item.bank] = issue
-                bank = banks[item.bank]
-                if item.peer_group and not isinstance(bank, SourceIssue) and "canadian_bank" not in bank.tags:
-                    bank = SourceIssue(Readiness.UNKNOWN, "peer_group_membership_unconfirmed")
-                if isinstance(bank, SourceIssue):
-                    probe = Probe(state=bank.state, reason=bank.reason)
+            items, readiness, probes = [], {}, {}
+            for item, scope, probe in probe_scopes(source_conn, requests, self.catalog, self.sources):
+                if pinned is not None:
+                    entry = observe(probe, previous.get(item.key, {}), now, 0) | item.describe()
+                    entry["stable"] = item.key in pinned
+                    entry["data_stability"] = "stable" if entry["stable"] else previous.get(item.key, {}).get(
+                        "data_stability", "unknown",
+                    )
+                    readiness[item.key] = entry
+                    if item.key in pinned:
+                        if probe.state is not Readiness.READY or probe.marker != pinned[item.key]:
+                            raise SourceIssue(Readiness.INCOMPLETE, "schedule_evidence_changed")
+                        query = (item.source, scope)
+                        probes[query] = probe
+                        items.append((item, query))
+                elif scope is None:
                     readiness[item.key] = observe(probe, {}, now, self.settings.quiet_seconds) | item.describe()
                 else:
-                    items.append((item, (item.source, item.source_scope(bank))))
+                    query = (item.source, scope)
+                    probes[query] = probe
+                    items.append((item, query))
+            if pinned is None:
+                keys = {query: physical_key(*query) for query in probes}
+                by_key = {keys[query]: probe for query, probe in probes.items()}
+                with connect(self.settings.report_dsn) as report_conn:
+                    stabilities = {
+                        key: record_observation(report_conn, key, by_key[key], now, self.settings.quiet_seconds)
+                        for key in sorted(by_key)
+                    }
 
-            distinct = dict.fromkeys(query for _, query in items)
-            hints = {query: self.catalog.hinted(source_conn, query[1], query[0]) for query in distinct}
-            probes = {
-                (source, scope): self.sources[source].probe(source_conn, scope)
-                for source, scope in sorted(distinct, key=lambda q: not hints[q])
-            }
-            keys = {
-                (source, scope): opaque_id(source, scope.bank.symbol, str(scope.period), scope.metric, scope.segment)
-                for source, scope in probes
-            }
-            # The marker records physical scope and intentionally ignores topical or ranking preferences.
-            by_key = {keys[query]: probe for query, probe in probes.items()}
-            with connect(self.settings.report_dsn) as report_conn:
-                stabilities = {
-                    key: record_observation(report_conn, key, by_key[key], now, self.settings.quiet_seconds)
-                    for key in sorted(by_key)
-                }
+                for item, query in items:
+                    readiness[item.key] = observe(
+                        probes[query], previous.get(item.key, {}), now, self.settings.quiet_seconds
+                    ) | item.describe() | {"data_stability": stabilities[keys[query]]}
+                    if not automatic:
+                        readiness[item.key]["stable"] = stabilities[keys[query]] == "stable"
 
-            for item, query in items:
-                readiness[item.key] = observe(
-                    probes[query], previous.get(item.key, {}), now, self.settings.quiet_seconds
-                ) | item.describe() | {"data_stability": stabilities[keys[query]]}
-                if not automatic:
-                    readiness[item.key]["stable"] = stabilities[keys[query]] == "stable"
-
-            if automatic and any(entry["required"] and not entry["stable"] for entry in readiness.values()):
-                return readiness, None
+                if automatic and any(entry["required"] and not entry["stable"] for entry in readiness.values()):
+                    return readiness, None
 
             evidence = {item.section_id: [] for item in requests}
             selected = {}
@@ -306,6 +311,8 @@ class Worker:
                     readiness[item.key].update(
                         state=hits.state, reason=hits.reason, stable=False, since=None, data_stability="unknown",
                     )
+                    if pinned is not None:
+                        raise SourceIssue(hits.state, hits.reason)
                     if automatic and item.selector.required:
                         return readiness, None
                 else:
@@ -314,25 +321,42 @@ class Worker:
             return readiness, evidence
 
 
+def poll_schedules(scheduler: Scheduler, stop: Event) -> None:
+    while not stop.is_set():
+        try:
+            scheduler.poll()
+        except psycopg.Error:
+            logger.warning("Schedule polling database unavailable")
+        stop.wait(scheduler.settings.schedule_poll_seconds)
+
+
 def main(
     owner_status: OwnerStatusChecker | None = None, credentials: CredentialProvider | None = None
 ) -> None:
     settings = Settings.from_env()
     logging.basicConfig(level=logging.INFO)
-    with httpx.Client(trust_env=False) as client:
+    with httpx.Client(trust_env=False, verify=gateway_tls()) as client:
         gateway = build_gateway(settings, client, credentials)
         worker = Worker(settings, gateway, owner_status)
         chat = ChatAgent(settings, gateway)
-        logger.info("Report worker started")
-        while True:
-            try:
-                busy = chat.run_one()
-                busy = worker.run_one() or busy
-            except psycopg.Error:
-                logger.warning("Database unavailable during worker attempt")
-                busy = False
-            if not busy:
-                sleep(settings.poll_seconds)
+        scheduler = Scheduler(settings, owner_status)
+        stop = Event()
+        poller = Thread(target=poll_schedules, args=(scheduler, stop), name="schedule-poller", daemon=True)
+        poller.start()
+        logger.info("Report worker and schedule poller started")
+        try:
+            while True:
+                try:
+                    busy = chat.run_one()
+                    busy = worker.run_one() or busy
+                except psycopg.Error:
+                    logger.warning("Database unavailable during worker attempt")
+                    busy = False
+                if not busy:
+                    sleep(settings.poll_seconds)
+        finally:
+            stop.set()
+            poller.join(timeout=2)
 
 
 if __name__ == "__main__":

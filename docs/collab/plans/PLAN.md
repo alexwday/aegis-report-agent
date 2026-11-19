@@ -58,7 +58,7 @@ The engine uses exact decimals. It preserves raw QoQ/YoY and labels the change b
 
 ## API, authentication and UI
 
-See the [generated OpenAPI](../../../api/openapi.json) for G5. The paths cover template and bank catalogs, source probes, draft revisions and stage inspection, save and saved versions, runs, previews, formats and evidence. Ownership uses the single `get_current_user()` interface, authenticated subject only, with an explicitly local fixed provider and a configured upstream GET bearer exchange. Resource lookups return 404 outside the caller's scope. Save and revision conflicts return 409. Production auth accepts a bounded, safe upstream detail and fails closed on timeout or service outage. A deployment must provide an active-owner checker before saved report generation. The assistant and the reporting flow share a configurable internal chat/embedding provider interface with per-call credentials. A deterministic stub powers local and integration tests.
+See the [generated OpenAPI](../../../api/openapi.json) for G6. The paths cover template and bank catalogs, source probes, draft revisions and stage inspection, save and saved versions, runs, previews, formats and evidence. Ownership uses the single `get_current_user()` interface, authenticated subject only, with an explicitly local fixed provider and a configured upstream GET bearer exchange. Resource lookups return 404 outside the caller's scope. Save and revision conflicts return 409. Production auth accepts a bounded, safe upstream detail and fails closed on timeout or service outage. A deployment must provide an active-owner checker before saved report generation. The assistant and the reporting flow share a configurable internal chat/embedding provider interface with per-call credentials. A deterministic stub powers local and integration tests.
 
 G4 persists conversation-scoped turns with POST-to-create, authenticated GET SSE using `Last-Event-ID`, and JSON result fallback. Events show queueing, start, tool progress, proposal, preview, final message, terminal state and proposal acceptance. Model tools resolve scope, inspect coverage, retrieve limited evidence, read the draft, propose a typed patch, request a preview and explain a diff. Apply, save and schedule remain explicit caller actions. G5 should evaluate the real gateway against the synthetic request corpus and rerun lexical and real-vector source evaluations on approved sources.
 
@@ -78,7 +78,7 @@ A section has a default one-step mode and an optional staged mode. A selected se
 
 Report catalog metadata is owner-scoped and separate from immutable versions. Archived reports can be restored. A clone copies an exact version. Historical drafts guard saves against the head at draft creation. System templates are shared and read-only. Personal templates snapshot an owned saved version. Saved reports expose PDF generated offline from JSON blocks, with escaped text and internal links to numbered source footnotes. [ReportLab paragraph links](https://docs.reportlab.com/reportlab/userguide/ch6_paragraphs/)
 
-Schedule definitions are owner-scoped, revisioned and pin a saved version and quarter. Explicit enqueue uses the existing automatic path. Pausing or changing the definition invalidates earlier queued revisions. Calendar activation and publication stay at G6.
+Schedule definitions are owner-scoped, revisioned and pin a saved version and quarter. Explicit enqueue uses the existing automatic path. Pausing or changing the definition invalidates earlier queued revisions. G6 advances target quarters automatically and publishes immutable generations with a per-period pointer. [Operations](../../integration/operations.md#automatic-scheduling)
 
 ## Later gates
 
@@ -89,7 +89,7 @@ Schedule definitions are owner-scoped, revisioned and pin a saved version and qu
 | G3 Reports | T-011–T-012, T-026–T-031 | 6–10 | Ranked retrieval and reviewer harnesses, staged previews, report and template lifecycle, cited PDF, and schedule definitions. |
 | G4 Chat | T-013, T-032–T-037 | 4–6 | Document relevance, multi-bank comparisons, typed draft tools, durable turns and replayable SSE. |
 | G5 Handoff | T-014, T-038–T-042 | 4–6 | Developer console and written UI/SSE contract for Functions Assist. |
-| G6 Scheduling | T-015 | 5–8 | Toronto default timezone, zero extra maturity lag, 14-day correction window, complete required inputs by default, opt-in provisional publication, retries and concurrency controls. |
+| G6 Scheduling | T-015, T-043–T-047 | 5–8 | Toronto default timezone, zero extra maturity lag, 14-day correction window, complete required inputs by default, opt-in provisional publication, retries and concurrency controls. |
 | G7 Hardening | T-016 | 4–7 | Approved retention and authorization wiring, load/cost results, deployment, Compose option and security review. |
 
-See [questions](../QUESTIONS.md) and [decisions](../DECISIONS.md). Main risks are exact catalog gaps, ambiguous numerical comparisons, late or missed changes, unsupported generation claims and sensitive content in release artifacts.
+See [questions](../QUESTIONS.md), [decisions](../DECISIONS.md) and the [G7 review list](G7-review.md). Main risks are exact catalog gaps, ambiguous numerical comparisons, late or missed changes, unsupported generation claims and sensitive content in release artifacts.

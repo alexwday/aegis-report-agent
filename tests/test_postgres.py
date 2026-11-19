@@ -44,7 +44,7 @@ def settings(monkeypatch):
     with connect(fixture_dsn) as conn:
         conn.execute("""
             TRUNCATE rpt.runs, rpt.drafts, rpt.report_versions, rpt.reports, rpt.source_observations,
-                     rpt.personal_templates, rpt.schedules, rpt.conversations, rpt.chat_turns, rpt.chat_events
+                     rpt.personal_templates, rpt.schedule_periods, rpt.schedules, rpt.conversations, rpt.chat_turns, rpt.chat_events
         """)
     return settings
 
@@ -610,7 +610,7 @@ def test_schedule_revision_pinning_and_pause_use_automatic_path(settings):
         assert submit(owner, "PUT", path, body)["revision"] == 1
         run = submit(owner, "POST", f"{path}/enqueue")
         assert submit(owner, "POST", f"{path}/enqueue") == run
-        assert worker.run_one()
+        assert not worker.run_one()
         status_path = f"/v1/runs/{run['id']}"
         run_state = submit(owner, "GET", status_path)
         assert (run_state["trigger_kind"], run_state["state"], run_state["version"]) == ("automatic", "waiting", 1)
@@ -619,7 +619,7 @@ def test_schedule_revision_pinning_and_pause_use_automatic_path(settings):
         assert not paused["enabled"]
         assert owner.post(f"{path}/enqueue").status_code == 409
         time[0] += timedelta(seconds=1800)
-        assert worker.run_one()
+        assert not worker.run_one()
         assert submit(owner, "GET", status_path)["error_code"] == "schedule_inactive_or_changed"
         assert outsider.get(f"{path}/runs").status_code == 404
         records = submit(owner, "GET", f"{path}/runs")
@@ -1013,3 +1013,269 @@ def test_chat_acceptance_conflict_for_stored_operations_and_matching_revision(se
         assert response.status_code == 409
         assert response.json()["detail"] == "proposal_operation_conflict"
         assert submit(client, "GET", f"/v1/drafts/{draft['id']}")["revision"] == 1
+
+
+def scheduled_report(client, *, period=Q2, banks=None, provisional=None):
+    draft = submit(client, "POST", "/v1/drafts", {"bank": "SYN1"})
+    path = f"/v1/drafts/{draft['id']}"
+    if banks:
+        draft = submit(client, "PATCH", path + "/operations", {
+            "revision": draft["revision"],
+            "operations": [{"op": "set_banks", "section_id": "net-income", "banks": banks}],
+        })
+    saved = submit(client, "POST", path + "/save", {"revision": draft["revision"]})
+    schedule = f"/v1/reports/{saved['report_id']}/schedule"
+    policy = {"version": 1, "enabled": True, "period": period, "quiet_seconds": 10,
+              "provisional_after_hours": provisional}
+    submit(client, "PUT", schedule, policy)
+    return schedule, policy
+
+
+def set_fixture_income(bank, quarter, value):
+    with connect(os.environ["RPT_MIGRATION_DATABASE_URL"]) as conn:
+        conn.execute("""
+            UPDATE public.benchmarking_report SET "Actual" = %s
+            WHERE bank_symbol = %s AND fiscal_year = 2090 AND quarter = %s
+              AND "Parameter" = 'Net Income' AND "Platform" = 'Enterprise'
+        """, (value, bank, quarter))
+
+
+def test_calendar_schedule_quiet_duplicate_concurrent_and_roll_forward(settings):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from aegis_report.scheduler import Scheduler
+
+    active = replace(settings, schedule_poll_seconds=1)
+    clock = datetime.now(UTC) + timedelta(seconds=4)
+    with TestClient(create_app(active)) as client, TestClient(
+        create_app(active, LocalAuth("different-schedule-owner"))
+    ) as outsider:
+        schedule, _ = scheduled_report(client)
+        scheduler = Scheduler(active, clock=lambda: clock)
+        assert scheduler.poll() == 0
+        pending, = submit(client, "GET", schedule + "/periods")
+        assert pending["state"] == "waiting_for_data" and pending["missing"][0]["bank"] == "SYN1-CA"
+        assert outsider.get(schedule + "/periods").status_code == 404
+        assert scheduler.poll() == 0
+
+        due = clock + timedelta(seconds=11)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            counts = list(pool.map(lambda _: Scheduler(active).poll(due), range(2)))
+        assert sorted(counts) == [0, 1]
+        assert scheduler.poll(due) == 0
+        ready, = submit(client, "GET", schedule + "/periods")
+        assert ready["state"] == "ready_to_run" and ready["generation"] == 1
+        assert Worker(active, StubGateway()).run_one(due)
+        published, = submit(client, "GET", schedule + "/periods")
+        assert published["state"] == "published" and published["current_kind"] == "complete"
+        assert submit(client, "GET", published["output_url"])["publication"] == "complete"
+        assert submit(client, "GET", schedule)["next_period"] == Q3
+
+        assert scheduler.poll(due + timedelta(seconds=1)) == 0
+        assert scheduler.poll(due + timedelta(seconds=12)) == 1
+        assert Worker(active, StubGateway()).run_one(due + timedelta(seconds=12))
+        assert submit(client, "GET", schedule)["next_period"] == {"year": 2090, "quarter": 4}
+        assert len(submit(client, "GET", schedule + "/runs")) == 2
+
+
+def test_schedule_provisional_complete_and_correction_current_pointer(settings):
+    from aegis_report.scheduler import Scheduler
+
+    active = replace(settings, schedule_poll_seconds=1)
+    now = datetime.now(UTC) + timedelta(seconds=4)
+    scheduler = Scheduler(active)
+    worker = Worker(active, StubGateway())
+    try:
+        with TestClient(create_app(active)) as client:
+            schedule, _ = scheduled_report(client, period=Q3, banks=["SYN1-CA", "SYN2-CA"], provisional=0)
+            assert scheduler.poll(now) == 0
+            assert scheduler.poll(now + timedelta(seconds=11)) == 1
+            assert worker.run_one(now + timedelta(seconds=11))
+            initial, = submit(client, "GET", schedule + "/periods")
+            assert initial["state"] == "provisional" and initial["current_kind"] == "provisional"
+            assert initial["missing"][0]["bank"] == "SYN2-CA"
+            assert submit(client, "GET", initial["output_url"])["publication"] == "provisional"
+            html = client.get(initial["output_url"].replace(".json", ".html"))
+            assert "Provisional report." in html.text
+            pdf = client.get(initial["output_url"].replace(".json", ".pdf"))
+            assert any("Provisional report." in page.extract_text() for page in PdfReader(BytesIO(pdf.content)).pages)
+            assert submit(client, "GET", schedule)["next_period"] == Q3
+
+            set_fixture_income("SYN2-CA", "Q3", 442)
+            assert scheduler.poll(now + timedelta(seconds=12)) == 0
+            assert scheduler.poll(now + timedelta(seconds=23)) == 1
+            assert worker.run_one(now + timedelta(seconds=23))
+            complete, = submit(client, "GET", schedule + "/periods")
+            assert complete["current_kind"] == "complete" and complete["generation"] == 2
+            assert complete["last_correction"][0]["change"] == "added"
+            assert complete["last_correction"][0]["bank"] == "SYN2-CA"
+            assert complete["correction_until"] is not None
+            assert submit(client, "GET", schedule)["next_period"]["quarter"] == 4
+
+            set_fixture_income("SYN1-CA", "Q3", 451)  # Same timestamp and row count.
+            assert scheduler.poll(now + timedelta(seconds=24)) == 0
+            assert scheduler.poll(now + timedelta(seconds=35)) == 1
+            assert worker.run_one(now + timedelta(seconds=35))
+            periods = submit(client, "GET", schedule + "/periods")
+            corrected = next(row for row in periods if row["period"] == Q3)
+            assert corrected["current_run_id"] != complete["current_run_id"]
+            assert corrected["correction_until"] == complete["correction_until"]
+            assert corrected["last_correction"][0]["bank"] == "SYN1-CA"
+            assert corrected["last_correction"][0]["change"] == "changed"
+            states = {row["id"]: row["publication_state"] for row in submit(client, "GET", schedule + "/runs")}
+            assert states == {corrected["current_run_id"]: "published",
+                              complete["current_run_id"]: "superseded", initial["current_run_id"]: "superseded"}
+            set_fixture_income("SYN1-CA", "Q3", 459)
+            assert scheduler.poll(now + timedelta(days=15)) == 0
+            assert len(submit(client, "GET", schedule + "/runs")) == 3
+    finally:
+        set_fixture_income("SYN1-CA", "Q3", 446)
+        set_fixture_income("SYN2-CA", "Q3", None)
+
+
+def test_schedule_detects_input_change_after_gather_and_waits_again(settings):
+    from aegis_report.scheduler import Scheduler
+
+    class ChangeWhileDrafting(StubGateway):
+        def choose_observation(self, instruction, evidence_ids):
+            set_fixture_income("SYN1-CA", "Q2", 439)
+            return super().choose_observation(instruction, evidence_ids)
+
+    active = replace(settings, schedule_poll_seconds=1)
+    now = datetime.now(UTC) + timedelta(seconds=4)
+    scheduler = Scheduler(active)
+    try:
+        with TestClient(create_app(active)) as client:
+            schedule, _ = scheduled_report(client)
+            assert scheduler.poll(now) == 0
+            assert scheduler.poll(now + timedelta(seconds=11)) == 1
+            assert Worker(active, ChangeWhileDrafting()).run_one(now + timedelta(seconds=11))
+            item, = submit(client, "GET", schedule + "/periods")
+            assert item["state"] == "waiting_for_data" and item["current_run_id"] is None
+            assert item["reason"] == "schedule_evidence_changed"
+            assert scheduler.poll(now + timedelta(seconds=12)) == 0
+            assert scheduler.poll(now + timedelta(seconds=19)) == 0
+            assert scheduler.poll(now + timedelta(seconds=23)) == 1
+            assert Worker(active, StubGateway()).run_one(now + timedelta(seconds=23))
+            item, = submit(client, "GET", schedule + "/periods")
+            assert item["state"] == "published" and item["generation"] == 2
+    finally:
+        set_fixture_income("SYN1-CA", "Q2", 435)
+
+
+def test_schedule_pause_archive_and_inactive_owner_prevent_publication(settings):
+    from aegis_report.scheduler import Scheduler
+
+    active = replace(settings, schedule_poll_seconds=1)
+    now = datetime.now(UTC) + timedelta(seconds=4)
+
+    class Owner:
+        enabled = True
+
+        def is_active(self, owner_key):
+            return self.enabled
+
+    owner = Owner()
+    scheduler = Scheduler(active, owner)
+    with TestClient(create_app(active)) as client:
+        schedule, policy = scheduled_report(client)
+
+        class Pause(StubGateway):
+            def choose_observation(self, instruction, evidence_ids):
+                submit(client, "PUT", schedule, policy | {"enabled": False, "expected_revision": 1})
+                return super().choose_observation(instruction, evidence_ids)
+
+        scheduler.poll(now)
+        scheduler.poll(now + timedelta(seconds=11))
+        assert Worker(active, Pause(), owner).run_one(now + timedelta(seconds=11))
+        state, = submit(client, "GET", schedule + "/periods")
+        assert state["state"] == "failed" and state["current_run_id"] is None
+        assert state["reason"] == "schedule_inactive_or_changed"
+
+        archived, _ = scheduled_report(client)
+        assert scheduler.poll(now + timedelta(seconds=12)) == 0
+        submit(client, "POST", archived.removesuffix("/schedule") + "/archive")
+        assert scheduler.poll(now + timedelta(seconds=23)) == 0
+        state, = submit(client, "GET", archived + "/periods")
+        assert state["state"] == "failed" and state["current_run_id"] is None
+
+        identity, _ = scheduled_report(client)
+        assert scheduler.poll(now + timedelta(seconds=24)) == 0
+        assert scheduler.poll(now + timedelta(seconds=35)) == 1
+        owner.enabled = False
+        assert Worker(active, StubGateway(), owner).run_one(now + timedelta(seconds=35))
+        item, = submit(client, "GET", identity + "/periods")
+        assert item["state"] == "failed" and item["reason"] == "report_or_owner_inactive"
+        assert item["current_run_id"] is None
+
+
+def test_schedule_generation_counter_fences_late_provisional_and_caps_retries(settings):
+    from aegis_report.gateway import RetryableGatewayError
+    from aegis_report.scheduler import Scheduler
+
+    active = replace(settings, schedule_poll_seconds=1)
+    now = datetime.now(UTC) + timedelta(seconds=4)
+    scheduler = Scheduler(active)
+    try:
+        with TestClient(create_app(active)) as client:
+            schedule, _ = scheduled_report(client, period=Q3, banks=["SYN1-CA", "SYN2-CA"], provisional=0)
+            assert scheduler.poll(now) == 0
+            assert scheduler.poll(now + timedelta(seconds=11)) == 1
+
+            class LateProvisional(StubGateway):
+                def choose_observation(self, instruction, evidence_ids):
+                    set_fixture_income("SYN2-CA", "Q3", 442)
+                    assert scheduler.poll(now + timedelta(seconds=12)) == 0
+                    assert scheduler.poll(now + timedelta(seconds=23)) == 1
+                    return super().choose_observation(instruction, evidence_ids)
+
+            assert Worker(active, LateProvisional()).run_one(now + timedelta(seconds=11))
+            history = submit(client, "GET", schedule + "/runs")
+            assert any(row["error_code"] == "schedule_generation_superseded" for row in history)
+            assert Worker(active, StubGateway()).run_one(now + timedelta(seconds=23))
+            item, = submit(client, "GET", schedule + "/periods")
+            assert item["generation"] == 2 and item["current_kind"] == "complete"
+
+            failing, _ = scheduled_report(client)
+            assert scheduler.poll(now + timedelta(seconds=24)) == 0
+            assert scheduler.poll(now + timedelta(seconds=35)) == 1
+
+            class Transient(StubGateway):
+                def choose_observation(self, instruction, evidence_ids):
+                    raise RetryableGatewayError("model_provider_unavailable")
+
+            worker = Worker(active, Transient())
+            assert worker.run_one(now + timedelta(seconds=35))
+            state, = submit(client, "GET", failing + "/periods")
+            assert state["state"] == "ready_to_run" and state["reason"] == "model_provider_unavailable"
+            assert not worker.run_one(now + timedelta(seconds=36))
+            assert worker.run_one(now + timedelta(seconds=40))
+            assert worker.run_one(now + timedelta(seconds=48))
+            state, = submit(client, "GET", failing + "/periods")
+            assert state["state"] == "failed" and state["reason"] == "attempts_exhausted"
+            assert state["current_run_id"] is None
+    finally:
+        set_fixture_income("SYN2-CA", "Q3", None)
+
+
+def test_schedule_request_adoption_and_expired_lease_recovery(settings):
+    from aegis_report.scheduler import Scheduler
+
+    active = replace(settings, schedule_poll_seconds=1)
+    now = datetime.now(UTC) + timedelta(seconds=4)
+    with TestClient(create_app(active)) as client:
+        schedule, _ = scheduled_report(client)
+        request = submit(client, "POST", schedule + "/enqueue")
+        assert not Worker(active, StubGateway()).run_one(now)
+        scheduler = Scheduler(active)
+        assert scheduler.poll(now) == 0
+        assert scheduler.poll(now + timedelta(seconds=11)) == 1
+        worker = Worker(active, StubGateway())
+        abandoned = worker._claim(now + timedelta(seconds=11))
+        assert str(abandoned["id"]) == request["id"]
+        at_restart = now + timedelta(minutes=4)
+        assert Worker(active, StubGateway()).run_one(at_restart)
+        assert worker._finalize(abandoned, "succeeded", {}, {}, None, at_restart, at_restart) is None
+        current, = submit(client, "GET", schedule + "/periods")
+        assert current["current_run_id"] == request["id"] and current["generation"] == 1
+        assert len(submit(client, "GET", schedule + "/runs")) == 1

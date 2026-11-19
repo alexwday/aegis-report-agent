@@ -43,7 +43,7 @@ from .models import (
 )
 from .pdf_export import render_pdf
 from .peers import PeerStatistics
-from .reasons import REASONS
+from .reasons import REASONS, reason_message
 from .repository import Reports
 from .sources import (
     BankCatalog,
@@ -114,6 +114,7 @@ class Observation(Probe):
     section_id: str | None = None
     message: str | None = None
     since: datetime | None
+    stable_at: datetime | None = None
     stable: bool
     data_stability: Literal["stable", "recently_changed", "unknown"] = "unknown"
     source: SourceName | None = None
@@ -224,6 +225,7 @@ class Result(StrictModel):
     period: Period
     basis: Literal["vendor_fiscal_label"]
     completion: Literal["gathered", "finished"] = "finished"
+    publication: Literal["complete", "provisional"] | None = None
     sections: list[SectionResult]
     diff: ReportDiff | None = None
     diff_details: DiffDetails | None = None
@@ -271,8 +273,13 @@ class ScheduleResponse(StrictModel):
     report_id: UUID
     version: int
     period: Period
+    next_period: Period
     enabled: bool
     revision: int
+    timezone: str
+    quiet_seconds: float | None
+    correction_days: int
+    provisional_after_hours: float | None
 
 
 class ScheduledRun(StrictModel):
@@ -283,6 +290,37 @@ class ScheduledRun(StrictModel):
     state: Literal["queued", "waiting", "running", "succeeded", "failed"]
     error_code: str | None
     created_at: datetime
+    generation: int | None
+    publication_state: Literal["published", "provisional", "superseded"] | None
+
+
+class CorrectionChange(StrictModel):
+    scope: str
+    change: Literal["added", "changed", "removed"]
+    section_id: str | None = None
+    bank: str | None = None
+    source: SourceName | None = None
+    period: Period | None = None
+
+
+class SchedulePeriodStatus(StrictModel):
+    period: Period
+    version: int
+    generation: int
+    state: Literal["waiting_for_data", "ready_to_run", "running", "published", "provisional", "failed"]
+    run_state: str | None
+    reason: str | None
+    message: str | None
+    next_check_at: datetime | None
+    checked_at: datetime
+    current_run_id: UUID | None
+    current_kind: Literal["complete", "provisional"] | None
+    output_url: str | None
+    published_at: datetime | None
+    correction_until: datetime | None
+    last_correction: list[CorrectionChange]
+    readiness: dict[str, Observation]
+    missing: list[Observation]
 
 
 class CitationDetail(Citation):
@@ -538,6 +576,19 @@ def create_app(settings: Settings | None = None, auth_provider: AuthProvider | N
         limit: Annotated[int, Query(ge=1, le=100)] = 20, offset: Annotated[int, Query(ge=0)] = 0,
     ):
         return reports.schedule_history(owner, report_id, limit, offset)
+
+    @api.get("/v1/reports/{report_id}/schedule/periods", response_model=list[SchedulePeriodStatus])
+    def schedule_periods(
+        report_id: UUID, owner: OwnerKey, reports: Storage,
+        limit: Annotated[int, Query(ge=1, le=100)] = 20, offset: Annotated[int, Query(ge=0)] = 0,
+    ):
+        rows = reports.schedule_periods(owner, report_id, limit, offset)
+        return [row | {
+            "message": reason_message(row["reason"] or row["state"]),
+            "output_url": f"/v1/runs/{row['current_run_id']}/output.json" if row["current_run_id"] else None,
+            "missing": [scope for scope in row["readiness"].values()
+                        if scope["required"] and not scope["stable"]],
+        } for row in rows]
 
     @api.put("/v1/reports/{report_id}/schedule", response_model=ScheduleResponse)
     def put_schedule(report_id: UUID, body: ScheduleWrite, owner: OwnerKey, reports: Storage):

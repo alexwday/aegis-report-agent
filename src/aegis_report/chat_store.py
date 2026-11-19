@@ -9,7 +9,7 @@ from .db import connect
 from .models import Period, PreviewRequest, ReportSpec
 from .repository import Reports
 
-TURN_LEASE = timedelta(seconds=45)
+TURN_LEASE = timedelta(seconds=75)
 
 
 class TurnStopped(Exception):
@@ -103,7 +103,7 @@ class ChatStore:
                 _, turn = self._turn(conn, owner, conversation_id, turn_id)
             return self._result(turn)
 
-    def claim(self):
+    def claim(self, lease: timedelta = TURN_LEASE):
         with connect(self.dsn) as conn:
             expired = conn.execute("""
                 SELECT id FROM rpt.chat_turns WHERE state = 'running' AND lease_until <= clock_timestamp()
@@ -120,7 +120,7 @@ class ChatStore:
                 return None
             conn.execute("""
                 UPDATE rpt.chat_turns SET state = 'running', lease_until = clock_timestamp() + %s WHERE id = %s
-            """, (TURN_LEASE, job["id"]))
+            """, (lease, job["id"]))
             self._event(conn, job["id"], "started")
             return job
 
